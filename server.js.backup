@@ -1512,7 +1512,7 @@ app.get('/v1/license', (req, res) => {
     name: 'Astrology API',
     description: 'API for astrological calculations using Swiss Ephemeris',
     copyright: '© 2024 Astrology API Project',
-    source_code: 'https://github.com/your-username/astro-api', // TODO: Update with actual repository URL
+    source_code: 'https://github.com/randomuncle/astro-api', // TODO: Update with actual repository URL
     license_text: 'https://www.gnu.org/licenses/agpl-3.0.html',
     third_party_components: {
       'Swiss Ephemeris': {
