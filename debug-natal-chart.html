@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌟 Debug Tema Natale</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+        }
+        .btn {
+            background: linear-gradient(45deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 25px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+        #debug {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #4facfe;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #f5c6cb;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #c3e6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌟 Debug Test Tema Natale</h1>
+        <p>Versione di debug per identificare problemi con il pulsante Calcola</p>
+        
+        <form id="natalForm">
+            <div class="form-group">
+                <label for="birthDate">Data di Nascita:</label>
+                <input type="date" id="birthDate" name="birthDate" value="1990-05-15" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="birthTime">Ora di Nascita:</label>
+                <input type="time" id="birthTime" name="birthTime" value="14:30" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="latitude">Latitudine:</label>
+                <input type="number" id="latitude" name="latitude" step="0.0001" value="45.4642" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="longitude">Longitudine:</label>
+                <input type="number" id="longitude" name="longitude" step="0.0001" value="9.1900" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="timezone">Fuso Orario:</label>
+                <input type="number" id="timezone" name="timezone" step="0.5" value="1" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="houseSystem">Sistema delle Case:</label>
+                <select id="houseSystem" name="houseSystem">
+                    <option value="P">Placidus</option>
+                    <option value="K">Koch</option>
+                    <option value="R">Regiomontanus</option>
+                </select>
+            </div>
+            
+            <button type="submit" class="btn" id="calculateBtn">🔮 Calcola Tema Natale</button>
+        </form>
+        
+        <div id="debug">🔍 Debug Log:
+</div>
+        
+        <div id="results">
+            <p>Risultati appariranno qui...</p>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE_URL = 'http://localhost:3000';
+        const API_KEY = 'test-api-key-123456789';
+        
+        function debugLog(message) {
+            const debugDiv = document.getElementById('debug');
+            const timestamp = new Date().toLocaleTimeString();
+            debugDiv.textContent += `[${timestamp}] ${message}\n`;
+            debugDiv.scrollTop = debugDiv.scrollHeight;
+            console.log(`[DEBUG] ${message}`);
+        }
+        
+        // Test iniziale
+        debugLog('🚀 Script caricato correttamente');
+        debugLog(`📍 API Base URL: ${API_BASE_URL}`);
+        debugLog(`🔑 API Key: ${API_KEY}`);
+        
+        // Verifica che gli elementi esistano
+        window.addEventListener('DOMContentLoaded', function() {
+            debugLog('📄 DOM caricato');
+            
+            const form = document.getElementById('natalForm');
+            const button = document.getElementById('calculateBtn');
+            
+            if (form) {
+                debugLog('✅ Form trovato');
+            } else {
+                debugLog('❌ Form NON trovato');
+            }
+            
+            if (button) {
+                debugLog('✅ Pulsante trovato');
+            } else {
+                debugLog('❌ Pulsante NON trovato');
+            }
+            
+            // Test click diretto sul pulsante
+            if (button) {
+                button.addEventListener('click', function(e) {
+                    debugLog('🖱️ Click diretto sul pulsante rilevato');
+                });
+            }
+        });
+        
+        // Event listener per il form
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('natalForm');
+            
+            if (form) {
+                form.addEventListener('submit', async function(e) {
+                    e.preventDefault();
+                    debugLog('📝 Submit del form intercettato');
+                    
+                    try {
+                        const formData = new FormData(e.target);
+                        debugLog('📊 FormData creato');
+                        
+                        const data = {
+                            birth_date: formData.get('birthDate'),
+                            birth_time: formData.get('birthTime'),
+                            latitude: parseFloat(formData.get('latitude')),
+                            longitude: parseFloat(formData.get('longitude')),
+                            timezone: parseFloat(formData.get('timezone')),
+                            house_system: formData.get('houseSystem')
+                        };
+                        
+                        debugLog(`📋 Dati estratti: ${JSON.stringify(data)}`);
+                        
+                        await calculateNatalChart(data);
+                        
+                    } catch (error) {
+                        debugLog(`❌ Errore nel submit: ${error.message}`);
+                        console.error('Errore submit:', error);
+                    }
+                });
+                
+                debugLog('✅ Event listener aggiunto al form');
+            } else {
+                debugLog('❌ Impossibile aggiungere event listener: form non trovato');
+            }
+        });
+        
+        async function calculateNatalChart(data) {
+            debugLog('🔮 Inizio calcolo tema natale');
+            
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="loading">⏳ Calcolando il tema natale...</div>';
+            
+            try {
+                debugLog('🌐 Preparazione richiesta fetch');
+                
+                const requestOptions = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': API_KEY
+                    },
+                    body: JSON.stringify(data)
+                };
+                
+                debugLog(`📤 Richiesta: ${JSON.stringify(requestOptions, null, 2)}`);
+                
+                const response = await fetch(`${API_BASE_URL}/v1/natal-chart`, requestOptions);
+                
+                debugLog(`📥 Risposta ricevuta - Status: ${response.status}`);
+                debugLog(`📥 Risposta OK: ${response.ok}`);
+                
+                const result = await response.json();
+                debugLog(`📊 Dati ricevuti - Keys: ${Object.keys(result).join(', ')}`);
+                
+                if (!response.ok) {
+                    throw new Error(result.message || 'Errore nel calcolo del tema natale');
+                }
+                
+                debugLog('✅ Calcolo completato con successo');
+                
+                resultsDiv.innerHTML = `
+                    <div class="success">
+                        <strong>✅ Tema natale calcolato con successo!</strong>
+                        <br><br>
+                        <strong>Pianeti trovati:</strong> ${Object.keys(result.planets || {}).join(', ')}
+                        <br>
+                        <strong>Case trovate:</strong> ${Object.keys(result.houses || {}).join(', ')}
+                        <br>
+                        <strong>Aspetti trovati:</strong> ${(result.aspects || []).length}
+                    </div>
+                `;
+                
+            } catch (error) {
+                debugLog(`❌ Errore durante il calcolo: ${error.message}`);
+                console.error('Errore completo:', error);
+                
+                resultsDiv.innerHTML = `
+                    <div class="error">
+                        <strong>❌ Errore:</strong> ${error.message}
+                        <br><br>
+                        Controlla il debug log per maggiori dettagli.
+                    </div>
+                `;
+            }
+        }
+        
+        // Test di connettività
+        window.addEventListener('load', async function() {
+            debugLog('🌍 Test di connettività API...');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/v1/health`);
+                if (response.ok) {
+                    debugLog('✅ Server raggiungibile');
+                } else {
+                    debugLog(`⚠️ Server risponde ma con errore: ${response.status}`);
+                }
+            } catch (error) {
+                debugLog(`❌ Server non raggiungibile: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>

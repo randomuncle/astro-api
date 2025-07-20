@@ -1,0 +1,49 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2024 Astrology API Project
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+
+THIRD-PARTY COMPONENTS:
+
+1. Swiss Ephemeris (sweph library)
+   Copyright (C) Astrodienst AG, Switzerland
+   Licensed under AGPL-3.0
+   The Swiss Ephemeris is developed by Astrodienst AG and is based on 
+   JPL Ephemeris DE431. Ephemeris files are copyrighted by Astrodienst AG.
+   
+2. Ephemeris Data Files
+   Copyright (C) 2014 Astrodienst AG, Switzerland
+   Based on JPL Ephemeris DE431
+   These files are distributed under the same license terms as the 
+   Swiss Ephemeris library.
+
+================================================================================
+
+NETWORK USE CLAUSE:
+
+If you make this software available to users over a network, you must
+provide access to the complete source code of your version, including
+any modifications you have made, under the terms of this license.
+
+This applies to any network service, web application, API, or SaaS
+offering that uses this software.
+
+================================================================================
+
+For the complete AGPL-3.0 license text, see:
+https://www.gnu.org/licenses/agpl-3.0.html

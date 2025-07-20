@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Ascendente</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .result { margin: 10px 0; padding: 10px; background: #f0f0f0; }
+        .error { background: #ffebee; color: #c62828; }
+        .success { background: #e8f5e8; color: #2e7d32; }
+        button { padding: 10px 20px; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <h1>🌟 Test Calcolo Ascendente</h1>
+    
+    <button id="testButton">Testa Ascendente</button>
+    
+    <div id="result"></div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('testButton').addEventListener('click', testAscendant);
+        });
+        
+        async function testAscendant() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testando...';
+            
+            const testData = {
+                birth_date: '1990-05-15',
+                birth_time: '14:30',
+                latitude: 45.4642,
+                longitude: 9.1900,
+                timezone: 1,
+                house_system: 'P'
+            };
+            
+            console.log('Sending request with data:', testData);
+            
+            try {
+                const response = await fetch('http://localhost:3000/v1/natal-chart', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'test-api-key-123456789'
+                    },
+                    body: JSON.stringify(testData)
+                });
+                
+                console.log('Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Full response:', data);
+                
+                if (data.houses && data.houses.ascendant) {
+                    const ascendant = data.houses.ascendant;
+                    const ascendantDegree = ascendant.cusp || 0;
+                    const sign = getZodiacSign(ascendantDegree);
+                    
+                    resultDiv.innerHTML = `
+                        <div class="result success">
+                            <h3>✅ Ascendente calcolato con successo!</h3>
+                            <p><strong>Ascendente:</strong> ${sign.name} ${sign.emoji}</p>
+                            <p><strong>Grado:</strong> ${ascendantDegree.toFixed(2)}°</p>
+                            <p><strong>Grado nel segno:</strong> ${ascendant.degree_in_sign?.toFixed(2) || 'N/A'}°</p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            <h3>❌ Ascendente non trovato nella risposta</h3>
+                            <p>Struttura case: ${JSON.stringify(data.houses, null, 2)}</p>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                console.error('Errore:', error);
+                resultDiv.innerHTML = `
+                    <div class="result error">
+                        <h3>❌ Errore nel calcolo</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        function getZodiacSign(longitude) {
+            const signs = [
+                { name: 'Ariete', emoji: '♈' },
+                { name: 'Toro', emoji: '♉' },
+                { name: 'Gemelli', emoji: '♊' },
+                { name: 'Cancro', emoji: '♋' },
+                { name: 'Leone', emoji: '♌' },
+                { name: 'Vergine', emoji: '♍' },
+                { name: 'Bilancia', emoji: '♎' },
+                { name: 'Scorpione', emoji: '♏' },
+                { name: 'Sagittario', emoji: '♐' },
+                { name: 'Capricorno', emoji: '♑' },
+                { name: 'Acquario', emoji: '♒' },
+                { name: 'Pesci', emoji: '♓' }
+            ];
+            
+            if (longitude === undefined || longitude === null || isNaN(longitude)) {
+                return { name: 'Sconosciuto', emoji: '❓' };
+            }
+            
+            const signIndex = Math.floor(longitude / 30);
+            return signs[signIndex] || { name: 'Sconosciuto', emoji: '❓' };
+        }
+    </script>
+</body>
+</html>

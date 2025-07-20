@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌟 Test Tema Natale - Astrology API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        
+        .content {
+            padding: 30px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+        
+        .form-section {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .form-section h2 {
+            color: #495057;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #4facfe;
+            padding-bottom: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(79, 172, 254, 0.3);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .results-section {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid #e9ecef;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .results-section h2 {
+            color: #495057;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #4facfe;
+            padding-bottom: 10px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4facfe;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .planet-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4facfe;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .planet-name {
+            font-weight: 600;
+            color: #495057;
+            font-size: 1.1em;
+            margin-bottom: 8px;
+        }
+        
+        .planet-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+        
+        .house-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #00f2fe;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .aspect-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #764ba2;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #f5c6cb;
+            margin-bottom: 20px;
+        }
+        
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #c3e6cb;
+            margin-bottom: 20px;
+        }
+        
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            padding: 5px;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .tab.active {
+            background: white;
+            color: #4facfe;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        @media (max-width: 768px) {
+            .content {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .planet-details {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌟 Test Tema Natale</h1>
+            <p>Calcola il tuo tema natale completo con pianeti, case e aspetti</p>
+        </div>
+        
+        <div class="content">
+            <div class="form-section">
+                <h2>📅 Dati di Nascita</h2>
+                <form id="natalForm">
+                    <div class="form-group">
+                        <label for="birthDate">Data di Nascita:</label>
+                        <input type="date" id="birthDate" name="birthDate" value="1990-05-15" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="birthTime">Ora di Nascita:</label>
+                        <input type="time" id="birthTime" name="birthTime" value="14:30" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="latitude">Latitudine:</label>
+                        <input type="number" id="latitude" name="latitude" step="0.0001" value="45.4642" placeholder="es. 45.4642" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="longitude">Longitudine:</label>
+                        <input type="number" id="longitude" name="longitude" step="0.0001" value="9.1900" placeholder="es. 9.1900" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="timezone">Fuso Orario:</label>
+                        <input type="number" id="timezone" name="timezone" step="0.5" value="0" placeholder="es. +1 per Italia" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="houseSystem">Sistema delle Case:</label>
+                        <select id="houseSystem" name="houseSystem">
+                            <option value="P">Placidus</option>
+                            <option value="K">Koch</option>
+                            <option value="R">Regiomontanus</option>
+                            <option value="C">Campanus</option>
+                            <option value="E">Equal</option>
+                            <option value="W">Whole Sign</option>
+                        </select>
+                    </div>
+                    
+                    <button type="submit" class="btn">🔮 Calcola Tema Natale</button>
+                </form>
+            </div>
+            
+            <div class="results-section">
+                <h2>📊 Risultati</h2>
+                <div id="results">
+                    <p style="text-align: center; color: #6c757d; padding: 40px;">Inserisci i dati di nascita e clicca "Calcola Tema Natale" per vedere i risultati.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE_URL = 'http://localhost:3000';
+        const API_KEY = 'test-api-key-123456789';
+        
+        document.getElementById('natalForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            console.log('Form submitted!');
+            
+            const formData = new FormData(e.target);
+            const data = {
+                birth_date: formData.get('birthDate'),
+                birth_time: formData.get('birthTime'),
+                latitude: parseFloat(formData.get('latitude')),
+                longitude: parseFloat(formData.get('longitude')),
+                timezone: parseFloat(formData.get('timezone')),
+                house_system: formData.get('houseSystem')
+            };
+            
+            console.log('Form data:', data);
+            await calculateNatalChart(data);
+        });
+        
+        async function calculateNatalChart(data) {
+            console.log('calculateNatalChart called with:', data);
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="loading">Calcolando il tema natale...</div>';
+            
+            try {
+                console.log('Making API request to:', `${API_BASE_URL}/v1/natal-chart`);
+                const response = await fetch(`${API_BASE_URL}/v1/natal-chart`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': API_KEY
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                console.log('Response status:', response.status);
+                const result = await response.json();
+                console.log('Response data:', result);
+                
+                if (!response.ok) {
+                    throw new Error(result.message || 'Errore nel calcolo del tema natale');
+                }
+                
+                displayResults(result);
+                
+            } catch (error) {
+                console.error('Errore:', error);
+                resultsDiv.innerHTML = `
+                    <div class="error">
+                        <strong>❌ Errore:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            
+            let html = `
+                <div class="success">
+                    <strong>✅ Tema natale calcolato con successo!</strong>
+                </div>
+                
+                <div class="tabs">
+                    <button class="tab active" onclick="showTab('planets', this)">🪐 Pianeti</button>
+                    <button class="tab" onclick="showTab('houses', this)">🏠 Case</button>
+                    <button class="tab" onclick="showTab('aspects', this)">🔗 Aspetti</button>
+                    <button class="tab" onclick="showTab('info', this)">ℹ️ Info</button>
+                </div>
+                
+                <div id="planets" class="tab-content active">
+                    <h3>🪐 Posizioni Planetarie</h3>
+            `;
+            
+            // Pianeti
+            for (const [planetName, planetData] of Object.entries(data.planets)) {
+                const longitude = planetData.longitude || 0;
+                const sign = getZodiacSign(longitude);
+                html += `
+                    <div class="planet-card">
+                        <div class="planet-name">${getPlanetEmoji(planetName)} ${planetName.toUpperCase()}</div>
+                        <div class="planet-details">
+                            <div><strong>Segno:</strong> ${sign.name} ${sign.emoji}</div>
+                            <div><strong>Grado:</strong> ${longitude.toFixed(2)}°</div>
+                            <div><strong>Casa:</strong> ${planetData.house || 'N/A'}</div>
+                            <div><strong>Velocità:</strong> ${planetData.speed_longitude?.toFixed(4) || 'N/A'}°/giorno</div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            html += `
+                </div>
+                
+                <div id="houses" class="tab-content">
+                    <h3>🏠 Cuspidi delle Case</h3>
+            `;
+            
+            // Case
+            const houseNames = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 
+                              'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth'];
+            
+            for (let i = 0; i < 12; i++) {
+                const houseName = houseNames[i];
+                const houseData = data.houses[houseName];
+                if (houseData) {
+                    const cusp = houseData.cusp || 0;
+                    const degreeInSign = houseData.degree_in_sign || 0;
+                    const sign = getZodiacSign(cusp);
+                    const houseNumber = i + 1;
+                    
+                    // Trova i pianeti in questa casa
+                    const planetsInHouse = [];
+                    for (const [planetName, planetData] of Object.entries(data.planets)) {
+                        if (planetData.house === houseNumber) {
+                            planetsInHouse.push(planetName.toUpperCase());
+                        }
+                    }
+                    
+                    html += `
+                        <div class="house-card">
+                            <div class="planet-name">🏠 Casa ${houseNumber}</div>
+                            <div class="planet-details">
+                                <div><strong>Segno:</strong> ${sign.name} ${sign.emoji}</div>
+                                <div><strong>Cuspide:</strong> ${cusp.toFixed(2)}°</div>
+                                <div><strong>Grado nel Segno:</strong> ${degreeInSign.toFixed(2)}°</div>
+                                <div><strong>Pianeti:</strong> ${planetsInHouse.length > 0 ? planetsInHouse.join(', ') : 'Nessuno'}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+            
+            html += `
+                </div>
+                
+                <div id="aspects" class="tab-content">
+                    <h3>🔗 Aspetti Planetari</h3>
+            `;
+            
+            // Aspetti
+            if (data.aspects && data.aspects.length > 0) {
+                data.aspects.forEach(aspect => {
+                    const orb = aspect.orb || 0;
+                    const angle = aspect.angle || 0;
+                    html += `
+                        <div class="aspect-card">
+                            <div class="planet-name">${getAspectEmoji(aspect.type)} ${aspect.planet1.toUpperCase()} ${aspect.type} ${aspect.planet2.toUpperCase()}</div>
+                            <div class="planet-details">
+                                <div><strong>Orb:</strong> ${orb.toFixed(2)}°</div>
+                                <div><strong>Esatto:</strong> ${aspect.exact ? 'Sì' : 'No'}</div>
+                                <div><strong>Separante:</strong> ${aspect.separating ? 'Sì' : 'No'}</div>
+                                <div><strong>Angolo:</strong> ${angle.toFixed(2)}°</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<p>Nessun aspetto trovato.</p>';
+            }
+            
+            html += `
+                </div>
+                
+                <div id="info" class="tab-content">
+                    <h3>ℹ️ Informazioni Calcolo</h3>
+                    <div class="planet-card">
+                        <div class="planet-name">📅 Dati di Nascita</div>
+                        <div class="planet-details">
+                            <div><strong>Data:</strong> ${data.birth_info.date}</div>
+                            <div><strong>Ora:</strong> ${data.birth_info.time}</div>
+                            <div><strong>Latitudine:</strong> ${data.birth_info.latitude}°</div>
+                            <div><strong>Longitudine:</strong> ${data.birth_info.longitude}°</div>
+                            <div><strong>Fuso Orario:</strong> ${data.birth_info.timezone}</div>
+                            <div><strong>Sistema Case:</strong> ${data.birth_info.house_system}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="planet-card">
+                        <div class="planet-name">🔢 Dati Astronomici</div>
+                        <div class="planet-details">
+                            <div><strong>Julian Day ET:</strong> ${data.birth_info.julian_day_et?.toFixed(6) || 'N/A'}</div>
+                            <div><strong>Julian Day UT:</strong> ${data.birth_info.julian_day_ut?.toFixed(6) || 'N/A'}</div>
+                            <div><strong>Ascendente:</strong> ${data.houses?.ascendant && data.houses.ascendant.cusp !== undefined ? getZodiacSign(data.houses.ascendant.cusp).name + ' ' + data.houses.ascendant.cusp.toFixed(2) + '°' : 'N/A'}</div>
+                            <div><strong>Medio Cielo:</strong> ${data.houses?.mc && data.houses.mc.cusp !== undefined ? getZodiacSign(data.houses.mc.cusp).name + ' ' + data.houses.mc.cusp.toFixed(2) + '°' : 'N/A'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        function showTab(tabName, element) {
+            // Nascondi tutti i tab content
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Rimuovi active da tutti i tab
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Mostra il tab selezionato
+            document.getElementById(tabName).classList.add('active');
+            if (element) {
+                element.classList.add('active');
+            } else {
+                // Fallback: trova il tab button corrispondente
+                const tabButtons = document.querySelectorAll('.tab');
+                tabButtons.forEach(btn => {
+                    if (btn.onclick && btn.onclick.toString().includes(tabName)) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+        }
+        
+        function getPlanetEmoji(planet) {
+            const emojis = {
+                'sun': '☉',
+                'moon': '☽',
+                'mercury': '☿',
+                'venus': '♀',
+                'mars': '♂',
+                'jupiter': '♃',
+                'saturn': '♄',
+                'uranus': '♅',
+                'neptune': '♆',
+                'pluto': '♇',
+                'north_node': '☊',
+                'chiron': '⚷'
+            };
+            return emojis[planet] || '🪐';
+        }
+        
+        function getAspectEmoji(aspect) {
+            const emojis = {
+                'conjunction': '☌',
+                'opposition': '☍',
+                'trine': '△',
+                'square': '□',
+                'sextile': '⚹',
+                'quincunx': '⚻'
+            };
+            return emojis[aspect] || '🔗';
+        }
+        
+        function getZodiacSign(longitude) {
+            const signs = [
+                { name: 'Ariete', emoji: '♈' },
+                { name: 'Toro', emoji: '♉' },
+                { name: 'Gemelli', emoji: '♊' },
+                { name: 'Cancro', emoji: '♋' },
+                { name: 'Leone', emoji: '♌' },
+                { name: 'Vergine', emoji: '♍' },
+                { name: 'Bilancia', emoji: '♎' },
+                { name: 'Scorpione', emoji: '♏' },
+                { name: 'Sagittario', emoji: '♐' },
+                { name: 'Capricorno', emoji: '♑' },
+                { name: 'Acquario', emoji: '♒' },
+                { name: 'Pesci', emoji: '♓' }
+            ];
+            
+            if (longitude === undefined || longitude === null || isNaN(longitude)) {
+                return { name: 'Sconosciuto', emoji: '❓' };
+            }
+            
+            const signIndex = Math.floor(longitude / 30);
+            return signs[signIndex] || { name: 'Sconosciuto', emoji: '❓' };
+        }
+        
+        // Carica alcuni dati di esempio
+        window.addEventListener('load', function() {
+            // Imposta Milano come posizione predefinita
+            document.getElementById('latitude').value = '45.4642';
+            document.getElementById('longitude').value = '9.1900';
+            document.getElementById('timezone').value = '1'; // CET
+        });
+    </script>
+</body>
+</html>

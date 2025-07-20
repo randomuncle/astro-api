@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌟 Test Completo - Astrology API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        
+        .status.loading {
+            background: #e3f2fd;
+            color: #1976d2;
+            border-left: 5px solid #1976d2;
+        }
+        
+        .status.success {
+            background: #e8f5e8;
+            color: #2e7d32;
+            border-left: 5px solid #4caf50;
+        }
+        
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border-left: 5px solid #f44336;
+        }
+        
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            border: 2px solid #e9ecef;
+        }
+        
+        .test-section h3 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        .form-group {
+            margin: 15px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin: 10px 5px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .response {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 20px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            margin: 15px 0;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌟 Test Completo Astrology API</h1>
+        
+        <div id="server-status" class="status loading">
+            📡 Controllo stato server...
+        </div>
+        
+        <!-- Test Health Check -->
+        <div class="test-section">
+            <h3>🏥 Health Check</h3>
+            <button class="btn" onclick="testHealth()">Test Health Endpoint</button>
+            <div id="health-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Carta Natale -->
+        <div class="test-section">
+            <h3>🌟 Carta Natale Completa</h3>
+            <div class="grid">
+                <div>
+                    <div class="form-group">
+                        <label>Data di nascita:</label>
+                        <input type="date" id="birth-date" value="1990-05-15">
+                    </div>
+                    <div class="form-group">
+                        <label>Ora di nascita:</label>
+                        <input type="time" id="birth-time" value="14:30">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>Latitudine:</label>
+                        <input type="number" id="latitude" value="45.4642" step="0.0001">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitudine:</label>
+                        <input type="number" id="longitude" value="9.1900" step="0.0001">
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Sistema delle Case:</label>
+                <select id="house-system">
+                    <option value="P">Placidus</option>
+                    <option value="K">Koch</option>
+                    <option value="O">Porphyrius</option>
+                    <option value="R">Regiomontanus</option>
+                    <option value="C">Campanus</option>
+                </select>
+            </div>
+            <button class="btn" onclick="testNatalChart()">Calcola Carta Natale</button>
+            <div id="natal-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Oroscopi -->
+        <div class="test-section">
+            <h3>🔮 Oroscopi</h3>
+            <div class="form-group">
+                <label>Segno zodiacale:</label>
+                <select id="zodiac-sign">
+                    <option value="aries">Ariete</option>
+                    <option value="taurus">Toro</option>
+                    <option value="gemini">Gemelli</option>
+                    <option value="cancer">Cancro</option>
+                    <option value="leo" selected>Leone</option>
+                    <option value="virgo">Vergine</option>
+                    <option value="libra">Bilancia</option>
+                    <option value="scorpio">Scorpione</option>
+                    <option value="sagittarius">Sagittario</option>
+                    <option value="capricorn">Capricorno</option>
+                    <option value="aquarius">Acquario</option>
+                    <option value="pisces">Pesci</option>
+                </select>
+            </div>
+            <button class="btn" onclick="testDailyHoroscope()">Oroscopo Giornaliero</button>
+            <button class="btn" onclick="testWeeklyHoroscope()">Oroscopo Settimanale</button>
+            <button class="btn" onclick="testMonthlyHoroscope()">Oroscopo Mensile</button>
+            <div id="horoscope-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Pianeti Solo -->
+        <div class="test-section">
+            <h3>🪐 Solo Pianeti</h3>
+            <button class="btn" onclick="testPlanetsOnly()">Calcola Solo Pianeti</button>
+            <div id="planets-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Case Solo -->
+        <div class="test-section">
+            <h3>🏠 Solo Case</h3>
+            <button class="btn" onclick="testHousesOnly()">Calcola Solo Case</button>
+            <div id="houses-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Ascendente -->
+        <div class="test-section">
+            <h3>🌅 Solo Ascendente</h3>
+            <button class="btn" onclick="testAscendant()">Calcola Ascendente</button>
+            <div id="ascendant-response" class="response" style="display: none;"></div>
+        </div>
+        
+        <!-- Test Batch -->
+        <div class="test-section">
+            <h3>🚀 Test Completo</h3>
+            <button class="btn" onclick="runAllTests()" id="run-all-btn">Esegui Tutti i Test</button>
+            <div id="batch-results" style="margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        const API_KEY = 'test-api-key-123456789';
+        
+        // Funzioni di utilità
+        function showResponse(elementId, data, success = true) {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            element.textContent = JSON.stringify(data, null, 2);
+            element.style.borderLeft = success ? '5px solid #4caf50' : '5px solid #f44336';
+        }
+        
+        function showStatus(message, type = 'loading') {
+            const status = document.getElementById('server-status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+        
+        async function makeRequest(endpoint, method = 'GET', body = null) {
+            const options = {
+                method,
+                headers: {
+                    'X-API-Key': API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            };
+            
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, options);
+                const data = await response.json();
+                
+                return {
+                    success: response.ok,
+                    status: response.status,
+                    data
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+        
+        // Test functions
+        async function testHealth() {
+            showStatus('🔍 Testando health check...', 'loading');
+            const result = await makeRequest('/v1/monthly-horoscope', 'POST', signData);
+            showResponse('horoscope-response', result.data || result.error, result.success);
+        }
+        
+        async function testPlanetsOnly() {
+            const birthData = {
+                birth_date: document.getElementById('birth-date').value,
+                birth_time: document.getElementById('birth-time').value + ':00'
+            };
+            
+            const result = await makeRequest('/v1/planets', 'POST', birthData);
+            showResponse('planets-response', result.data || result.error, result.success);
+        }
+        
+        async function testHousesOnly() {
+            const birthData = {
+                birth_date: document.getElementById('birth-date').value,
+                birth_time: document.getElementById('birth-time').value + ':00',
+                latitude: parseFloat(document.getElementById('latitude').value),
+                longitude: parseFloat(document.getElementById('longitude').value),
+                house_system: document.getElementById('house-system').value
+            };
+            
+            const result = await makeRequest('/v1/houses', 'POST', birthData);
+            showResponse('houses-response', result.data || result.error, result.success);
+        }
+        
+        async function testAscendant() {
+            const birthData = {
+                birth_date: document.getElementById('birth-date').value,
+                birth_time: document.getElementById('birth-time').value + ':00',
+                latitude: parseFloat(document.getElementById('latitude').value),
+                longitude: parseFloat(document.getElementById('longitude').value)
+            };
+            
+            const result = await makeRequest('/v1/ascendant', 'POST', birthData);
+            showResponse('ascendant-response', result.data || result.error, result.success);
+        }
+        
+        async function runAllTests() {
+            const btn = document.getElementById('run-all-btn');
+            const results = document.getElementById('batch-results');
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Eseguendo test...';
+            results.innerHTML = '';
+            
+            const tests = [
+                { name: 'Health Check', func: () => makeRequest('/v1/health') },
+                { name: 'Info API', func: () => makeRequest('/v1/info') },
+                { name: 'Carta Natale', func: () => makeRequest('/v1/natal-chart', 'POST', {
+                    birth_date: '1990-05-15',
+                    birth_time: '14:30:00',
+                    latitude: 45.4642,
+                    longitude: 9.1900
+                }) },
+                { name: 'Solo Pianeti', func: () => makeRequest('/v1/planets', 'POST', {
+                    birth_date: '1990-05-15',
+                    birth_time: '14:30:00'
+                }) },
+                { name: 'Solo Case', func: () => makeRequest('/v1/houses', 'POST', {
+                    birth_date: '1990-05-15',
+                    birth_time: '14:30:00',
+                    latitude: 45.4642,
+                    longitude: 9.1900
+                }) },
+                { name: 'Ascendente', func: () => makeRequest('/v1/ascendant', 'POST', {
+                    birth_date: '1990-05-15',
+                    birth_time: '14:30:00',
+                    latitude: 45.4642,
+                    longitude: 9.1900
+                }) },
+                { name: 'Oroscopo Giornaliero', func: () => makeRequest('/v1/daily-horoscope', 'POST', {
+                    sign: 'leo'
+                }) },
+                { name: 'Oroscopo Settimanale', func: () => makeRequest('/v1/weekly-horoscope', 'POST', {
+                    sign: 'leo'
+                }) }
+            ];
+            
+            let passed = 0;
+            let failed = 0;
+            
+            for (const test of tests) {
+                const testDiv = document.createElement('div');
+                testDiv.className = 'status loading';
+                testDiv.textContent = `🔄 Testando ${test.name}...`;
+                results.appendChild(testDiv);
+                
+                try {
+                    const result = await test.func();
+                    
+                    if (result.success) {
+                        testDiv.className = 'status success';
+                        testDiv.textContent = `✅ ${test.name} - OK (${result.status})`;
+                        passed++;
+                    } else {
+                        testDiv.className = 'status error';
+                        testDiv.textContent = `❌ ${test.name} - FAILED (${result.status || 'Network Error'})`;
+                        failed++;
+                    }
+                } catch (error) {
+                    testDiv.className = 'status error';
+                    testDiv.textContent = `❌ ${test.name} - ERROR: ${error.message}`;
+                    failed++;
+                }
+                
+                // Piccola pausa tra i test
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
+            // Risultato finale
+            const summaryDiv = document.createElement('div');
+            summaryDiv.style.marginTop = '20px';
+            summaryDiv.style.padding = '20px';
+            summaryDiv.style.borderRadius = '10px';
+            summaryDiv.style.fontWeight = 'bold';
+            summaryDiv.style.fontSize = '18px';
+            
+            if (failed === 0) {
+                summaryDiv.className = 'status success';
+                summaryDiv.textContent = `🎉 Tutti i test completati con successo! (${passed}/${tests.length})`;
+            } else {
+                summaryDiv.className = 'status error';
+                summaryDiv.textContent = `⚠️ Test completati: ${passed} successi, ${failed} fallimenti su ${tests.length} totali`;
+            }
+            
+            results.appendChild(summaryDiv);
+            
+            btn.disabled = false;
+            btn.textContent = 'Esegui Tutti i Test';
+        }
+        
+        // Auto-test del server all'avvio
+        document.addEventListener('DOMContentLoaded', async () => {
+            await testHealth();
+        });
+    </script>
+</body>
+</html>/health');
+            
+            if (result.success) {
+                showStatus('✅ Server attivo e funzionante!', 'success');
+                showResponse('health-response', result.data);
+            } else {
+                showStatus('❌ Server non risponde', 'error');
+                showResponse('health-response', result.error || result.data, false);
+            }
+        }
+        
+        async function testNatalChart() {
+            const birthData = {
+                birth_date: document.getElementById('birth-date').value,
+                birth_time: document.getElementById('birth-time').value + ':00',
+                latitude: parseFloat(document.getElementById('latitude').value),
+                longitude: parseFloat(document.getElementById('longitude').value),
+                house_system: document.getElementById('house-system').value
+            };
+            
+            const result = await makeRequest('/v1/natal-chart', 'POST', birthData);
+            showResponse('natal-response', result.data || result.error, result.success);
+        }
+        
+        async function testDailyHoroscope() {
+            const signData = {
+                sign: document.getElementById('zodiac-sign').value
+            };
+            
+            const result = await makeRequest('/v1/daily-horoscope', 'POST', signData);
+            showResponse('horoscope-response', result.data || result.error, result.success);
+        }
+        
+        async function testWeeklyHoroscope() {
+            const signData = {
+                sign: document.getElementById('zodiac-sign').value
+            };
+            
+            const result = await makeRequest('/v1/weekly-horoscope', 'POST', signData);
+            showResponse('horoscope-response', result.data || result.error, result.success);
+        }
+        
+        async function testMonthlyHoroscope() {
+            const signData = {
+                sign: document.getElementById('zodiac-sign').value
+            };
+            
+            const result = await makeRequest('/v1

@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Autocompletamento Geocoding</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.2em;
+        }
+        .search-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 4px solid #007bff;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
+        }
+        button {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.3s;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,123,255,0.3);
+        }
+        .results {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 1px solid #dee2e6;
+        }
+        .suggestion {
+            background: white;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        .suggestion:hover {
+            transform: translateX(5px);
+        }
+        .suggestion-name {
+            font-weight: bold;
+            color: #007bff;
+            font-size: 1.1em;
+        }
+        .suggestion-details {
+            color: #666;
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+        .coordinates {
+            background: #e9ecef;
+            padding: 5px 10px;
+            border-radius: 5px;
+            display: inline-block;
+            margin-top: 5px;
+            font-family: monospace;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #dc3545;
+            margin-top: 20px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+            margin-top: 20px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #007bff;
+            font-style: italic;
+        }
+        .metadata {
+            background: #e3f2fd;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 15px;
+            font-size: 0.9em;
+            color: #1565c0;
+        }
+        .quick-tests {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .quick-test {
+            background: #6c757d;
+            color: white;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .quick-test:hover {
+            background: #5a6268;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌍 Test Autocompletamento Geocoding</h1>
+        
+        <div class="search-section">
+            <h3>🔍 Parametri di Ricerca</h3>
+            
+            <div class="form-group">
+                <label for="query">Query di ricerca (minimo 2 caratteri):</label>
+                <input type="text" id="query" placeholder="Es: Milan, Roma, New York..." value="Milan">
+            </div>
+            
+            <div class="form-group">
+                <label for="limit">Limite risultati (1-20):</label>
+                <input type="number" id="limit" min="1" max="20" value="8">
+            </div>
+            
+            <div class="form-group">
+                <label for="country">Filtro paese (opzionale):</label>
+                <select id="country">
+                    <option value="">Tutti i paesi</option>
+                    <option value="IT">Italia (IT)</option>
+                    <option value="US">Stati Uniti (US)</option>
+                    <option value="FR">Francia (FR)</option>
+                    <option value="DE">Germania (DE)</option>
+                    <option value="ES">Spagna (ES)</option>
+                    <option value="GB">Regno Unito (GB)</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="minPopulation">Popolazione minima:</label>
+                <select id="minPopulation">
+                    <option value="0">Tutte le città</option>
+                    <option value="1000">1.000+ abitanti</option>
+                    <option value="10000" selected>10.000+ abitanti</option>
+                    <option value="50000">50.000+ abitanti</option>
+                    <option value="100000">100.000+ abitanti</option>
+                    <option value="500000">500.000+ abitanti</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="italianPriority">Priorità italiana:</label>
+                <select id="italianPriority">
+                    <option value="true" selected>Sì</option>
+                    <option value="false">No</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="apiKey">API Key:</label>
+                <input type="text" id="apiKey" value="test-api-key-123456789" placeholder="Inserisci la tua API key">
+            </div>
+            
+            <button id="testBtn">🚀 Testa Autocompletamento</button>
+            <button id="clearBtn">🗑️ Pulisci Risultati</button>
+            
+            <div class="quick-tests">
+                <h4 style="width: 100%; margin: 10px 0 5px 0;">Test Rapidi:</h4>
+                <button class="quick-test" data-query="Milan">Milan</button>
+                <button class="quick-test" data-query="Roma">Roma</button>
+                <button class="quick-test" data-query="New">New</button>
+                <button class="quick-test" data-query="San">San</button>
+                <button class="quick-test" data-query="Par">Par</button>
+                <button class="quick-test" data-query="Ber">Ber</button>
+                <button class="quick-test" data-query="Lon">Lon</button>
+                <button class="quick-test" data-query="Mad">Mad</button>
+            </div>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:3000';
+        
+        async function testAutocomplete() {
+            console.log('🚀 Funzione testAutocomplete chiamata');
+            
+            const query = document.getElementById('query').value.trim();
+            const limit = document.getElementById('limit').value;
+            const country = document.getElementById('country').value;
+            const minPopulation = document.getElementById('minPopulation').value;
+            const italianPriority = document.getElementById('italianPriority').value;
+            const apiKey = document.getElementById('apiKey').value;
+            
+            console.log('📝 Parametri:', { query, limit, country, minPopulation, italianPriority, apiKey });
+            
+            if (!query || query.length < 2) {
+                showError('La query deve essere di almeno 2 caratteri');
+                return;
+            }
+            
+            if (!apiKey) {
+                showError('API Key richiesta');
+                return;
+            }
+            
+            showLoading();
+            
+            try {
+                // Costruisci URL con parametri
+                const params = new URLSearchParams({
+                    q: query,
+                    limit: limit,
+                    min_population: minPopulation,
+                    italian_priority: italianPriority
+                });
+                
+                if (country) {
+                    params.append('country', country);
+                }
+                
+                const url = `${API_BASE_URL}/v1/geocoding/autocomplete?${params.toString()}`;
+                
+                console.log('🌐 URL richiesta:', url);
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'X-API-Key': apiKey,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                console.log('📡 Risposta completa:', data);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${data.error || data.message || 'Errore sconosciuto'}`);
+                }
+                
+                displayResults(data, query);
+                
+            } catch (error) {
+                console.error('❌ Errore:', error);
+                showError(`Errore durante la richiesta: ${error.message}`);
+            }
+        }
+        
+        function displayResults(data, originalQuery) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (!data.success) {
+                showError(`Ricerca fallita: ${data.message || 'Errore sconosciuto'}`);
+                return;
+            }
+            
+            const suggestions = data.suggestions || [];
+            
+            let html = `
+                <div class="success">
+                    ✅ <strong>Ricerca completata con successo!</strong><br>
+                    Query: "${originalQuery}" → ${suggestions.length} suggerimenti trovati
+                </div>
+            `;
+            
+            if (suggestions.length === 0) {
+                html += `
+                    <div class="error">
+                        ⚠️ Nessun risultato trovato per "${originalQuery}"
+                    </div>
+                `;
+            } else {
+                html += '<h3>🏙️ Suggerimenti trovati:</h3>';
+                
+                suggestions.forEach((suggestion, index) => {
+                    const isItalian = suggestion.is_italian ? '🇮🇹' : '🌍';
+                    const population = suggestion.population ? suggestion.population.toLocaleString() : 'N/A';
+                    const confidence = suggestion.confidence ? `${(suggestion.confidence * 100).toFixed(1)}%` : 'N/A';
+                    
+                    html += `
+                        <div class="suggestion">
+                            <div class="suggestion-name">
+                                ${isItalian} ${suggestion.name || 'N/A'}
+                            </div>
+                            <div class="suggestion-details">
+                                <strong>Paese:</strong> ${suggestion.country_name || suggestion.country || 'N/A'} (${suggestion.country || 'N/A'})<br>
+                                <strong>Popolazione:</strong> ${population} abitanti<br>
+                                <strong>Confidenza:</strong> ${confidence}<br>
+                                <strong>Formato:</strong> ${suggestion.formatted || 'N/A'}
+                            </div>
+                            <div class="coordinates">
+                                📍 ${suggestion.coordinates?.lat?.toFixed(4) || 'N/A'}, ${suggestion.coordinates?.lon?.toFixed(4) || 'N/A'}
+                            </div>
+                            ${suggestion.alternate_names && suggestion.alternate_names.length > 0 ? 
+                                `<div style="margin-top: 8px; font-size: 0.85em; color: #666;">
+                                    <strong>Nomi alternativi:</strong> ${suggestion.alternate_names.join(', ')}
+                                </div>` : ''}
+                        </div>
+                    `;
+                });
+            }
+            
+            // Aggiungi metadata
+            if (data.metadata) {
+                html += `
+                    <div class="metadata">
+                        ⏱️ <strong>Metadata:</strong><br>
+                        Tempo di calcolo: ${data.metadata.calculation_time_ms || 'N/A'}ms<br>
+                        Timestamp: ${data.metadata.timestamp || 'N/A'}<br>
+                        Cache: ${data.metadata.cached ? 'Sì' : 'No'}<br>
+                        ${data.metadata.search_options ? 
+                            `Opzioni: ${JSON.stringify(data.metadata.search_options, null, 2)}` : ''}
+                    </div>
+                `;
+            }
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        function showLoading() {
+            document.getElementById('results').innerHTML = `
+                <div class="loading">
+                    🔄 Ricerca in corso...
+                </div>
+            `;
+        }
+        
+        function showError(message) {
+            document.getElementById('results').innerHTML = `
+                <div class="error">
+                    ❌ <strong>Errore:</strong> ${message}
+                </div>
+            `;
+        }
+        
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+        
+        function quickTest(query) {
+            document.getElementById('query').value = query;
+            testAutocomplete();
+        }
+        
+        // Test automatico al caricamento della pagina
+        window.addEventListener('load', () => {
+            console.log('🚀 Pagina di test autocompletamento caricata');
+            console.log('💡 Suggerimento: Prova a cercare "Milan", "Roma", "New York", ecc.');
+            
+            // Aggiungi event listeners per i pulsanti
+            document.getElementById('testBtn').addEventListener('click', testAutocomplete);
+            document.getElementById('clearBtn').addEventListener('click', clearResults);
+            
+            // Event listeners per i pulsanti di test rapido
+            document.querySelectorAll('.quick-test').forEach(button => {
+                button.addEventListener('click', function() {
+                    const query = this.getAttribute('data-query');
+                    quickTest(query);
+                });
+            });
+        });
+        
+        // Autocompletamento in tempo reale (opzionale)
+        document.getElementById('query').addEventListener('input', function(e) {
+            const query = e.target.value.trim();
+            if (query.length >= 2) {
+                // Debounce per evitare troppe richieste
+                clearTimeout(this.debounceTimer);
+                this.debounceTimer = setTimeout(() => {
+                    // testAutocomplete(); // Decommentare per autocompletamento in tempo reale
+                }, 500);
+            }
+        });
+        
+        // Invio con Enter
+        document.getElementById('query').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                testAutocomplete();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test License Endpoint - Astrology API</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #4a5568;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #f0f4f8;
+            border-left: 4px solid #4299e1;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .error {
+            background: #fed7d7;
+            border-left-color: #e53e3e;
+            color: #c53030;
+        }
+        .success {
+            background: #c6f6d5;
+            border-left-color: #38a169;
+            color: #2f855a;
+        }
+        .info {
+            background: #bee3f8;
+            border-left-color: #3182ce;
+            color: #2c5282;
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .endpoint-url {
+            font-family: 'Courier New', monospace;
+            background: #edf2f7;
+            padding: 8px 12px;
+            border-radius: 6px;
+            display: inline-block;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Test License Endpoint</h1>
+        
+        <div class="info">
+            <h3>📄 Informazioni</h3>
+            <p>Questo strumento testa l'endpoint <span class="endpoint-url">/v1/license</span> per verificare la conformità AGPL-3.0.</p>
+            <p><strong>Server:</strong> <span class="endpoint-url">http://localhost:3000</span></p>
+        </div>
+
+        <div class="test-section">
+            <h3>🧪 Test License Endpoint</h3>
+            <button class="btn" id="testLicenseBtn">Test /v1/license</button>
+            <button class="btn" id="testInfoBtn">Test /v1/info</button>
+            <button class="btn" id="clearBtn">Pulisci Risultati</button>
+            
+            <div id="result" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>✅ Checklist Conformità AGPL-3.0</h3>
+            <div id="compliance-check">
+                <p>🔄 Clicca "Test /v1/license" per verificare la conformità...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const resultDiv = document.getElementById('result');
+        const complianceDiv = document.getElementById('compliance-check');
+
+        function showResult(data, isError = false) {
+            resultDiv.style.display = 'block';
+            resultDiv.className = `result ${isError ? 'error' : 'success'}`;
+            resultDiv.textContent = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+        }
+
+        function checkCompliance(licenseData) {
+            const checks = [
+                { key: 'license', expected: 'AGPL-3.0', label: 'Licenza AGPL-3.0' },
+                { key: 'source_code', expected: true, label: 'URL Codice Sorgente', check: (val) => val && val.includes('github') },
+                { key: 'license_text', expected: true, label: 'Link Testo Licenza', check: (val) => val && val.includes('gnu.org') },
+                { key: 'third_party_components', expected: true, label: 'Componenti Terze Parti', check: (val) => val && val['Swiss Ephemeris'] },
+                { key: 'compliance_notice', expected: true, label: 'Avviso Conformità', check: (val) => val && val.length > 50 },
+                { key: 'agpl_requirements', expected: true, label: 'Requisiti AGPL', check: (val) => val && val.network_use },
+                { key: 'legal_obligations', expected: true, label: 'Obblighi Legali', check: (val) => val && val.source_availability }
+            ];
+
+            let html = '<h4>📋 Risultati Verifica Conformità:</h4>';
+            let allPassed = true;
+
+            checks.forEach(check => {
+                const value = licenseData[check.key];
+                const passed = check.check ? check.check(value) : value === check.expected;
+                allPassed = allPassed && passed;
+                
+                html += `<p>${passed ? '✅' : '❌'} ${check.label}: ${passed ? 'OK' : 'MANCANTE/ERRATO'}</p>`;
+            });
+
+            html += `<hr><p><strong>${allPassed ? '🎉 CONFORMITÀ COMPLETA' : '⚠️ AZIONE RICHIESTA'}</strong></p>`;
+            
+            if (!allPassed) {
+                html += '<p style="color: #e53e3e;">Alcuni requisiti AGPL-3.0 non sono soddisfatti. Verificare la documentazione.</p>';
+            }
+
+            complianceDiv.innerHTML = html;
+        }
+
+        async function testEndpoint(endpoint) {
+            try {
+                console.log(`Testing endpoint: ${endpoint}`);
+                const response = await fetch(`http://localhost:3000${endpoint}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                showResult(data, false);
+                
+                if (endpoint === '/v1/license') {
+                    checkCompliance(data);
+                }
+                
+            } catch (error) {
+                console.error('Test failed:', error);
+                showResult(`Errore: ${error.message}`, true);
+                
+                if (endpoint === '/v1/license') {
+                    complianceDiv.innerHTML = '<p style="color: #e53e3e;">❌ Impossibile verificare la conformità. Endpoint non raggiungibile.</p>';
+                }
+            }
+        }
+
+        // Event Listeners
+        document.getElementById('testLicenseBtn').addEventListener('click', () => {
+            testEndpoint('/v1/license');
+        });
+
+        document.getElementById('testInfoBtn').addEventListener('click', () => {
+            testEndpoint('/v1/info');
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            resultDiv.style.display = 'none';
+            complianceDiv.innerHTML = '<p>🔄 Clicca "Test /v1/license" per verificare la conformità...</p>';
+        });
+
+        // Auto-test on page load
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                testEndpoint('/v1/license');
+            }, 1000);
+        });
+    </script>
+</body>
+</html>

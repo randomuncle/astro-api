@@ -1,0 +1,3349 @@
+/**
+ * 🌟 ASTROLOGY API SERVER COMPLETO - Con Oroscopi
+ * Swiss Ephemeris API + Oroscopi + Carta Natale
+ * AGPL-3.0 Compliant
+ */
+
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const compression = require('compression');
+const winston = require('winston');
+const path = require('path');
+
+// Import geocoding service
+const geocodingService = require('./services/geocoding');
+
+// Importa Swiss Ephemeris solo se disponibile
+let sweph;
+try {
+  sweph = require('sweph');
+  console.log('✅ Swiss Ephemeris loaded successfully');
+} catch (error) {
+  console.log('⚠️ Swiss Ephemeris not available, using mock mode');
+  sweph = null;
+}
+
+// 📊 Logger Setup
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'debug',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'astrology-api' },
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+
+// 🏗️ App Setup
+const app = express();
+const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY || 'test-api-key';
+
+// Initialize geocoding at startup
+(async () => {
+  await geocodingService.loadDatabase();
+})();
+
+// Mock Redis se non disponibile
+let redisClient = null;
+try {
+  const redis = require('redis');
+  redisClient = redis.createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379'
+  });
+  redisClient.connect().catch(() => {
+    console.log('⚠️ Redis not available, running without cache');
+    redisClient = null;
+  });
+} catch (error) {
+  console.log('⚠️ Redis not installed, running without cache');
+}
+
+// 🛡️ Security Middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"]
+    }
+  }
+}));
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization'],
+  credentials: false
+}));
+
+// 📊 Enhanced Per-IP Rate Limiting
+const createRateLimiter = (windowMs, max, message) => {
+  return rateLimit({
+    windowMs,
+    max,
+    message,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.ip, // Rate limit per IP
+    handler: (req, res) => {
+      logger.warn('Global rate limit exceeded', {
+        ip: req.ip,
+        method: req.method,
+        url: req.url,
+        userAgent: req.get('User-Agent')
+      });
+      res.status(429).json({
+        error: 'Too Many Requests',
+        message: message.error,
+        retryAfter: Math.ceil(windowMs / 1000)
+      });
+    }
+  });
+};
+
+// Multiple rate limiting tiers
+const strictLimiter = createRateLimiter(
+  1 * 60 * 1000, // 1 minute
+  20, // 20 requests per minute per IP
+  { error: 'Too many requests per minute. Please slow down.' }
+);
+
+const moderateLimiter = createRateLimiter(
+  15 * 60 * 1000, // 15 minutes
+  200, // 200 requests per 15 minutes per IP
+  { error: 'Too many requests per 15 minutes. Please wait before retrying.' }
+);
+
+const dailyLimiter = createRateLimiter(
+  24 * 60 * 60 * 1000, // 24 hours
+  5000, // 5000 requests per day per IP
+  { error: 'Daily request limit exceeded. Try again tomorrow.' }
+);
+
+// Apply rate limiters in order (most restrictive first)
+app.use(strictLimiter);
+app.use(moderateLimiter);
+app.use(dailyLimiter);
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+
+// ⏱️ Request Timeout Middleware
+const requestTimeout = (req, res, next) => {
+  const timeout = parseInt(process.env.REQUEST_TIMEOUT) || 30000; // 30 seconds default
+  
+  const timer = setTimeout(() => {
+    if (!res.headersSent) {
+      logger.error('Request timeout', {
+        method: req.method,
+        url: req.url,
+        ip: req.ip,
+        timeout: timeout
+      });
+      res.status(408).json({
+        error: 'Request Timeout',
+        message: 'Request took too long to process',
+        timeout_ms: timeout
+      });
+    }
+  }, timeout);
+  
+  // Clear timeout when response finishes
+  res.on('finish', () => {
+    clearTimeout(timer);
+  });
+  
+  res.on('close', () => {
+    clearTimeout(timer);
+  });
+  
+  next();
+};
+
+app.use(requestTimeout);
+
+// 🚦 Advanced Per-IP Rate Limiting Middleware
+const rateLimitStore = new Map();
+const suspiciousIPs = new Map();
+const blockedIPs = new Set();
+
+const advancedRateLimit = (req, res, next) => {
+  try {
+    const clientIP = req.ip;
+    const apiKey = req.headers['x-api-key'] || 'anonymous';
+    const now = Date.now();
+    
+    // Check if IP is blocked
+    if (blockedIPs.has(clientIP)) {
+      logger.warn('Blocked IP attempted access', {
+        ip: clientIP,
+        method: req.method,
+        url: req.url,
+        userAgent: req.get('User-Agent')
+      });
+      return res.status(429).json({
+        error: 'IP Blocked',
+        message: 'Your IP has been temporarily blocked due to suspicious activity.'
+      });
+    }
+    
+    // Different limits for different scenarios
+    const limits = {
+      perIP: {
+        windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) || 60000, // 1 minute
+        maxRequests: parseInt(process.env.RATE_LIMIT_MAX) || 50 // 50 per minute per IP
+      },
+      perIPWithKey: {
+        windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) || 60000, // 1 minute
+        maxRequests: parseInt(process.env.RATE_LIMIT_MAX) || 100 // 100 per minute per IP with valid key
+      },
+      suspicious: {
+        windowMs: 300000, // 5 minutes
+        maxRequests: 10 // Very restrictive for suspicious IPs
+      }
+    };
+    
+    // Determine which limit to apply
+    let limit;
+    let clientId;
+    
+    if (suspiciousIPs.has(clientIP)) {
+      limit = limits.suspicious;
+      clientId = `suspicious:${clientIP}`;
+    } else if (apiKey !== 'anonymous') {
+      limit = limits.perIPWithKey;
+      clientId = `ip_with_key:${clientIP}`;
+    } else {
+      limit = limits.perIP;
+      clientId = `ip_only:${clientIP}`;
+    }
+    
+    // Clean old entries periodically
+    if (Math.random() < 0.01) { // 1% chance to clean
+      for (const [key, data] of rateLimitStore.entries()) {
+        if (now - data.resetTime > limit.windowMs * 2) {
+          rateLimitStore.delete(key);
+        }
+      }
+      
+      // Clean suspicious IPs older than 1 hour
+      for (const [ip, timestamp] of suspiciousIPs.entries()) {
+        if (now - timestamp > 3600000) {
+          suspiciousIPs.delete(ip);
+        }
+      }
+    }
+    
+    // Get or create client data
+    let clientData = rateLimitStore.get(clientId);
+    if (!clientData || now - clientData.resetTime > limit.windowMs) {
+      clientData = {
+        count: 0,
+        resetTime: now,
+        firstRequest: now,
+        violations: 0
+      };
+      rateLimitStore.set(clientId, clientData);
+    }
+    
+    // Increment request count
+    clientData.count++;
+    
+    // Check if limit exceeded
+    if (clientData.count > limit.maxRequests) {
+      clientData.violations++;
+      const resetIn = Math.ceil((limit.windowMs - (now - clientData.resetTime)) / 1000);
+      
+      // Mark IP as suspicious after multiple violations
+      if (clientData.violations >= 3) {
+        suspiciousIPs.set(clientIP, now);
+        logger.warn('IP marked as suspicious', {
+          ip: clientIP,
+          violations: clientData.violations,
+          method: req.method,
+          url: req.url
+        });
+      }
+      
+      // Block IP after excessive violations
+      if (clientData.violations >= 5) {
+        blockedIPs.add(clientIP);
+        // Auto-unblock after 1 hour
+        setTimeout(() => {
+          blockedIPs.delete(clientIP);
+          logger.info('IP auto-unblocked', { ip: clientIP });
+        }, 3600000);
+        
+        logger.error('IP blocked due to excessive violations', {
+          ip: clientIP,
+          violations: clientData.violations,
+          method: req.method,
+          url: req.url
+        });
+      }
+      
+      logger.warn('Advanced rate limit exceeded', {
+        ip: clientIP,
+        method: req.method,
+        url: req.url,
+        count: clientData.count,
+        limit: limit.maxRequests,
+        violations: clientData.violations,
+        resetIn: resetIn,
+        limitType: clientId.split(':')[0]
+      });
+      
+      return res.status(429).json({
+        error: 'Too Many Requests',
+        message: `Rate limit exceeded. Try again in ${resetIn} seconds.`,
+        limit: limit.maxRequests,
+        remaining: 0,
+        resetTime: new Date(clientData.resetTime + limit.windowMs).toISOString(),
+        limitType: clientId.split(':')[0]
+      });
+    }
+    
+    // Add rate limit headers
+    res.set({
+      'X-RateLimit-Limit': limit.maxRequests,
+      'X-RateLimit-Remaining': Math.max(0, limit.maxRequests - clientData.count),
+      'X-RateLimit-Reset': new Date(clientData.resetTime + limit.windowMs).toISOString(),
+      'X-RateLimit-Type': clientId.split(':')[0]
+    });
+    
+    next();
+  } catch (error) {
+    logger.error('Advanced rate limiting error', {
+      error: error.message,
+      ip: req.ip,
+      method: req.method,
+      url: req.url
+    });
+    // Continue without rate limiting if there's an error
+    next();
+  }
+};
+
+app.use(advancedRateLimit);
+
+// 🛡️ Input Sanitization and Validation Middleware
+const sanitizeInput = (req, res, next) => {
+  try {
+    // Sanitize query parameters
+    if (req.query) {
+      for (const [key, value] of Object.entries(req.query)) {
+        if (typeof value === 'string') {
+          // Remove potentially dangerous characters
+          req.query[key] = value
+            .replace(/[<>"'&]/g, '') // Remove HTML/XML chars
+            .replace(/[\x00-\x1f\x7f-\x9f]/g, '') // Remove control chars
+            .trim()
+            .substring(0, 1000); // Limit length
+        }
+      }
+    }
+    
+    // Sanitize request body
+    if (req.body && typeof req.body === 'object') {
+      const sanitizeObject = (obj, depth = 0) => {
+        if (depth > 10) return obj; // Prevent deep recursion
+        
+        for (const [key, value] of Object.entries(obj)) {
+          if (typeof value === 'string') {
+            obj[key] = value
+              .replace(/[<>"'&]/g, '') // Remove HTML/XML chars
+              .replace(/[\x00-\x1f\x7f-\x9f]/g, '') // Remove control chars
+              .trim()
+              .substring(0, 1000); // Limit length
+          } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            sanitizeObject(value, depth + 1);
+          } else if (Array.isArray(value)) {
+            value.forEach((item, index) => {
+              if (typeof item === 'string') {
+                value[index] = item
+                  .replace(/[<>"'&]/g, '')
+                  .replace(/[\x00-\x1f\x7f-\x9f]/g, '')
+                  .trim()
+                  .substring(0, 1000);
+              } else if (typeof item === 'object' && item !== null) {
+                sanitizeObject(item, depth + 1);
+              }
+            });
+          }
+        }
+      };
+      
+      sanitizeObject(req.body);
+    }
+    
+    // Validate request size
+    const contentLength = parseInt(req.get('content-length') || '0');
+    const maxSize = parseInt(process.env.MAX_REQUEST_SIZE) || 10485760; // 10MB default
+    
+    if (contentLength > maxSize) {
+      logger.warn('Request too large', {
+        ip: req.ip,
+        method: req.method,
+        url: req.url,
+        contentLength: contentLength,
+        maxSize: maxSize
+      });
+      return res.status(413).json({
+        error: 'Payload Too Large',
+        message: `Request size exceeds maximum allowed size of ${Math.round(maxSize / 1024 / 1024)}MB`
+      });
+    }
+    
+    next();
+  } catch (error) {
+    logger.error('Input sanitization error', {
+      error: error.message,
+      ip: req.ip,
+      method: req.method,
+      url: req.url
+    });
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Invalid input data format'
+    });
+  }
+};
+
+app.use(sanitizeInput);
+
+// 📁 Serve static files (HTML, CSS, JS)
+app.use(express.static(path.join(__dirname), {
+  index: false, // Don't serve index.html automatically
+  setHeaders: (res, path) => {
+    if (path.endsWith('.html')) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    }
+  }
+}));
+
+// 🔐 Enhanced API Key Authentication
+const authenticateApiKey = (req, res, next) => {
+  try {
+    const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+    
+    // Check if API key exists
+    if (!apiKey) {
+      logger.warn('Missing API key', { 
+        ip: req.ip, 
+        method: req.method, 
+        url: req.url,
+        userAgent: req.get('User-Agent')
+      });
+      return res.status(401).json({ 
+        error: 'Unauthorized',
+        message: 'API key is required. Please provide X-API-Key header or apiKey query parameter.'
+      });
+    }
+    
+    // Validate API key format
+    if (typeof apiKey !== 'string' || apiKey.length < 10) {
+      logger.warn('Invalid API key format', { 
+        ip: req.ip, 
+        method: req.method, 
+        url: req.url,
+        keyLength: apiKey.length
+      });
+      return res.status(401).json({ 
+        error: 'Unauthorized',
+        message: 'Invalid API key format'
+      });
+    }
+    
+    // Check API key validity
+    if (apiKey !== API_KEY) {
+      logger.warn('Invalid API key attempt', { 
+        ip: req.ip, 
+        method: req.method, 
+        url: req.url,
+        providedKey: apiKey.substring(0, 8) + '...',
+        userAgent: req.get('User-Agent')
+      });
+      return res.status(401).json({ 
+        error: 'Unauthorized',
+        message: 'Invalid API key provided'
+      });
+    }
+    
+    // Log successful authentication
+    logger.debug('API key authenticated successfully', {
+      ip: req.ip,
+      method: req.method,
+      url: req.url
+    });
+    
+    next();
+  } catch (error) {
+    logger.error('API authentication error', {
+      error: error.message,
+      ip: req.ip,
+      method: req.method,
+      url: req.url
+    });
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Authentication system error'
+    });
+  }
+};
+
+// 📝 Request Logging
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info('Request completed', {
+      method: req.method,
+      url: req.url,
+      status: res.statusCode,
+      duration,
+      ip: req.ip
+    });
+  });
+  next();
+});
+
+// 🎯 Cache Helper
+const getFromCache = async (key) => {
+  if (!redisClient) return null;
+  try {
+    const cached = await redisClient.get(key);
+    return cached ? JSON.parse(cached) : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const setCache = async (key, data, ttl = 3600) => {
+  if (!redisClient) return;
+  try {
+    await redisClient.setEx(key, ttl, JSON.stringify(data));
+  } catch (error) {
+    logger.warn('Cache write error', { error: error.message });
+  }
+};
+
+// 🧮 Swiss Ephemeris Functions
+const initializeSwissEph = () => {
+  if (!sweph) {
+    logger.warn('Swiss Ephemeris not available - using mock mode');
+    return false;
+  }
+  
+  try {
+    const ephePath = process.env.EPHE_PATH || './ephemeris';
+    sweph.set_ephe_path(ephePath);
+    logger.info('✅ Swiss Ephemeris initialized', { 
+      path: ephePath,
+      version: sweph.version()
+    });
+    return true;
+  } catch (error) {
+    logger.error('❌ Failed to initialize Swiss Ephemeris', { error: error.message });
+    return false;
+  }
+};
+
+// Mock functions per quando Swiss Ephemeris non è disponibile
+const mockCalculations = {
+  utc_to_jd: (year, month, day, hour, minute, second, calendar) => ({
+    flag: 0,
+    data: [2451545.0, 2451545.0], // Mock Julian Day
+    error: null
+  }),
+  
+  calc: (jd, planet, flags) => ({
+    flag: 0,
+    data: [
+      Math.random() * 360, // longitude
+      Math.random() * 5 - 2.5, // latitude  
+      Math.random() * 2, // distance
+      Math.random() * 2 - 1, // speed long
+      Math.random() * 0.1 - 0.05, // speed lat
+      Math.random() * 0.01 - 0.005 // speed dist
+    ],
+    error: null
+  }),
+  
+  calc_ut: (jd, planet, flags) => ({
+    flag: 0,
+    data: [
+      Math.random() * 360, // longitude
+      Math.random() * 5 - 2.5, // latitude  
+      Math.random() * 2, // distance
+      Math.random() * 2 - 1, // speed long
+      Math.random() * 0.1 - 0.05, // speed lat
+      Math.random() * 0.01 - 0.005 // speed dist
+    ],
+    error: null
+  }),
+  
+  houses_ex2: (jd, flags, lat, lon, hsys) => ({
+    flag: 0,
+    data: Array.from({length: 16}, (_, i) => i * 30 + Math.random() * 20),
+    error: null
+  }),
+  
+  constants: {
+    OK: 0,
+    SE_GREG_CAL: 1,
+    SE_SUN: 0, SE_MOON: 1, SE_MERCURY: 2, SE_VENUS: 3,
+    SE_MARS: 4, SE_JUPITER: 5, SE_SATURN: 6, SE_URANUS: 7,
+    SE_NEPTUNE: 8, SE_PLUTO: 9, SE_TRUE_NODE: 11, SE_CHIRON: 15,
+    SEFLG_SWIEPH: 2, SEFLG_SPEED: 256
+  },
+  
+  version: () => 'Mock 1.0.0'
+};
+
+// Usa Swiss Ephemeris se disponibile, altrimenti mock
+const se = sweph || mockCalculations;
+const swissEphAvailable = initializeSwissEph();
+
+// 🧮 Calculation Helpers with Enhanced Error Handling
+const validateDateInput = (birthDate, birthTime) => {
+  // Validate date format
+  if (!birthDate || typeof birthDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) {
+    throw new Error('Invalid birth_date format. Expected YYYY-MM-DD');
+  }
+  
+  // Validate time format
+  if (!birthTime || typeof birthTime !== 'string' || !/^\d{1,2}:\d{2}(:\d{2})?$/.test(birthTime)) {
+    throw new Error('Invalid birth_time format. Expected HH:MM or HH:MM:SS');
+  }
+  
+  const [year, month, day] = birthDate.split('-').map(Number);
+  const [hours, minutes, seconds = 0] = birthTime.split(':').map(Number);
+  
+  // Validate that parsing was successful
+  if (isNaN(year) || isNaN(month) || isNaN(day) || isNaN(hours) || isNaN(minutes) || isNaN(seconds)) {
+    throw new Error('Invalid numeric values in date or time');
+  }
+  
+  // Validate date ranges
+  if (year < 1800 || year > 2200) {
+    throw new Error('Year must be between 1800 and 2200');
+  }
+  if (month < 1 || month > 12) {
+    throw new Error('Month must be between 1 and 12');
+  }
+  if (day < 1 || day > 31) {
+    throw new Error('Day must be between 1 and 31');
+  }
+  if (hours < 0 || hours > 23) {
+    throw new Error('Hours must be between 0 and 23');
+  }
+  if (minutes < 0 || minutes > 59) {
+    throw new Error('Minutes must be between 0 and 59');
+  }
+  if (seconds < 0 || seconds > 59) {
+    throw new Error('Seconds must be between 0 and 59');
+  }
+  
+  // Validate actual date existence (e.g., no February 30th)
+  const testDate = new Date(year, month - 1, day);
+  if (testDate.getFullYear() !== year || testDate.getMonth() !== month - 1 || testDate.getDate() !== day) {
+    throw new Error(`Invalid date: ${birthDate} does not exist`);
+  }
+  
+  // Additional validation for leap years and month-specific day limits
+  const daysInMonth = new Date(year, month, 0).getDate();
+  if (day > daysInMonth) {
+    throw new Error(`Invalid day: ${day} is not valid for ${year}-${month.toString().padStart(2, '0')}`);
+  }
+  
+  return { year, month, day, hours, minutes, seconds };
+};
+
+const validateCoordinates = (latitude, longitude) => {
+  // Check for null, undefined, or non-numeric values
+  if (latitude === null || latitude === undefined || typeof latitude !== 'number' || isNaN(latitude)) {
+    throw new Error('Latitude must be a valid number');
+  }
+  if (longitude === null || longitude === undefined || typeof longitude !== 'number' || isNaN(longitude)) {
+    throw new Error('Longitude must be a valid number');
+  }
+  
+  // Check for infinite values
+  if (!isFinite(latitude)) {
+    throw new Error('Latitude must be a finite number');
+  }
+  if (!isFinite(longitude)) {
+    throw new Error('Longitude must be a finite number');
+  }
+  
+  // Validate coordinate ranges with more specific error messages
+  if (latitude < -90 || latitude > 90) {
+    throw new Error(`Latitude ${latitude} is out of range. Must be between -90 and 90 degrees`);
+  }
+  if (longitude < -180 || longitude > 180) {
+    throw new Error(`Longitude ${longitude} is out of range. Must be between -180 and 180 degrees`);
+  }
+  
+  // Check for extreme precision that might indicate invalid data
+  const latPrecision = latitude.toString().split('.')[1];
+  const lonPrecision = longitude.toString().split('.')[1];
+  
+  if (latPrecision && latPrecision.length > 10) {
+    throw new Error('Latitude precision is too high (max 10 decimal places)');
+  }
+  if (lonPrecision && lonPrecision.length > 10) {
+    throw new Error('Longitude precision is too high (max 10 decimal places)');
+  }
+  
+  // Warn about coordinates that might be swapped (common error)
+  if (Math.abs(latitude) > 85 && Math.abs(longitude) < 90) {
+    logger.warn('Possible coordinate swap detected', { latitude, longitude });
+  }
+};
+
+const validateTimezone = (timezone) => {
+  if (timezone === null || timezone === undefined) {
+    return 0; // Default to UTC
+  }
+  
+  if (typeof timezone !== 'number' || isNaN(timezone)) {
+    throw new Error('Timezone must be a valid number');
+  }
+  
+  if (!isFinite(timezone)) {
+    throw new Error('Timezone must be a finite number');
+  }
+  
+  // Extended timezone range to handle all possible timezones
+  if (timezone < -12 || timezone > 14) {
+    throw new Error(`Timezone ${timezone} is out of range. Must be between -12 and +14 hours`);
+  }
+  
+  // Check for unusual precision that might indicate an error
+  const tzPrecision = timezone.toString().split('.')[1];
+  if (tzPrecision && tzPrecision.length > 2) {
+    logger.warn('Unusual timezone precision detected', { timezone });
+  }
+  
+  return timezone;
+};
+
+const calculateJulianDay = (birthDate, birthTime, timezone = 0) => {
+  try {
+    // Validate inputs first
+    const { year, month, day, hours, minutes, seconds } = validateDateInput(birthDate, birthTime);
+    
+    // Validate timezone with enhanced function
+     const validatedTimezone = validateTimezone(timezone);
+     
+     const utcHours = hours - validatedTimezone;
+     
+     // Additional validation for UTC hours
+     if (utcHours < -24 || utcHours >= 48) {
+       throw new Error(`Invalid UTC hours calculation: ${utcHours}. Check timezone and birth time`);
+     }
+    
+    // Ensure Swiss Ephemeris is available
+    if (!se || !se.utc_to_jd) {
+      throw new Error('Swiss Ephemeris calculation function not available');
+    }
+    
+    const date = se.utc_to_jd(year, month, day, utcHours, minutes, seconds, se.constants.SE_GREG_CAL);
+    
+    if (!date || typeof date !== 'object') {
+      throw new Error('Invalid response from Swiss Ephemeris date calculation');
+    }
+    
+    if (date.flag !== se.constants.OK && date.flag < 0) {
+      throw new Error(`Date calculation failed: ${date.error || 'Unknown Swiss Ephemeris error'}`);
+    }
+    
+    if (!date.data || !Array.isArray(date.data) || date.data.length < 2) {
+      throw new Error('Invalid Julian Day data returned from Swiss Ephemeris');
+    }
+    
+    // Validate Julian Day values
+    if (isNaN(date.data[0]) || isNaN(date.data[1])) {
+      throw new Error('Invalid Julian Day values calculated');
+    }
+    
+    return date.data;
+    
+  } catch (error) {
+    logger.error('Julian Day calculation error', { 
+      error: error.message, 
+      birthDate, 
+      birthTime, 
+      timezone 
+    });
+    throw error;
+  }
+};
+
+const calculatePlanets = (jd_et) => {
+  try {
+    // Validate input
+    if (typeof jd_et !== 'number' || isNaN(jd_et)) {
+      throw new Error('Invalid Julian Day ET value for planet calculations');
+    }
+    
+    if (!se || !se.calc_ut || !se.constants) {
+      throw new Error('Swiss Ephemeris not properly initialized for planet calculations');
+    }
+    
+    const planets = {};
+    const flags = se.constants.SEFLG_SWIEPH | se.constants.SEFLG_SPEED;
+    let successfulCalculations = 0;
+    
+    const planetList = [
+      { id: se.constants.SE_SUN, name: 'sun', required: true },
+      { id: se.constants.SE_MOON, name: 'moon', required: true },
+      { id: se.constants.SE_MERCURY, name: 'mercury', required: false },
+      { id: se.constants.SE_VENUS, name: 'venus', required: false },
+      { id: se.constants.SE_MARS, name: 'mars', required: false },
+      { id: se.constants.SE_JUPITER, name: 'jupiter', required: false },
+      { id: se.constants.SE_SATURN, name: 'saturn', required: false },
+      { id: se.constants.SE_URANUS, name: 'uranus', required: false },
+      { id: se.constants.SE_NEPTUNE, name: 'neptune', required: false },
+      { id: se.constants.SE_PLUTO, name: 'pluto', required: false },
+      { id: se.constants.SE_TRUE_NODE, name: 'north_node', required: false },
+      { id: se.constants.SE_CHIRON, name: 'chiron', required: false }
+    ];
+    
+    for (const planet of planetList) {
+      try {
+        // Validate planet ID
+        if (typeof planet.id !== 'number' || planet.id < 0) {
+          logger.warn(`Invalid planet ID for ${planet.name}`, { id: planet.id });
+          if (planet.required) {
+            throw new Error(`Required planet ${planet.name} has invalid ID`);
+          }
+          continue;
+        }
+        
+        const result = se.calc_ut(jd_et, planet.id, flags);
+        
+        // Validate result structure
+        if (!result || typeof result !== 'object') {
+          logger.warn(`Invalid result structure for ${planet.name}`);
+          if (planet.required) {
+            throw new Error(`Required planet ${planet.name} calculation returned invalid result`);
+          }
+          continue;
+        }
+        
+        // Check for calculation errors
+        if (result.flag < 0) {
+          logger.warn(`Calculation error for ${planet.name}`, { 
+            error: result.error, 
+            flag: result.flag 
+          });
+          if (planet.required) {
+            throw new Error(`Required planet ${planet.name} calculation failed: ${result.error}`);
+          }
+          continue;
+        }
+        
+        // Validate data array
+        if (!result.data || !Array.isArray(result.data) || result.data.length < 6) {
+          logger.warn(`Insufficient data for ${planet.name}`, { 
+            data_length: result.data ? result.data.length : 0
+          });
+          if (planet.required) {
+            throw new Error(`Required planet ${planet.name} returned insufficient data`);
+          }
+          continue;
+        }
+        
+        // Validate individual data values
+        const [longitude, latitude, distance, speed_long, speed_lat, speed_dist] = result.data;
+        
+        if (isNaN(longitude) || isNaN(latitude) || isNaN(distance)) {
+          logger.warn(`Invalid coordinate data for ${planet.name}`, { longitude, latitude, distance });
+          if (planet.required) {
+            throw new Error(`Required planet ${planet.name} has invalid coordinate data`);
+          }
+          continue;
+        }
+        
+        // Validate longitude range (0-360)
+        const normalizedLongitude = ((longitude % 360) + 360) % 360;
+        
+        logger.debug(`Successfully calculated ${planet.name}`, {
+          flag: result.flag,
+          longitude: normalizedLongitude
+        });
+        
+        planets[planet.name] = {
+          longitude: normalizedLongitude,
+          latitude: latitude || 0,
+          distance: distance || 0,
+          speed_longitude: speed_long || 0,
+          speed_latitude: speed_lat || 0,
+          speed_distance: speed_dist || 0,
+          sign: getZodiacSign(normalizedLongitude),
+          degree_in_sign: normalizedLongitude % 30,
+          house: null
+        };
+        
+        successfulCalculations++;
+        
+      } catch (error) {
+        logger.error(`Error calculating ${planet.name}`, { 
+          error: error.message,
+          required: planet.required
+        });
+        
+        if (planet.required) {
+          throw error; // Re-throw for required planets
+        }
+      }
+    }
+    
+    // Ensure we have at least the required planets
+    if (successfulCalculations === 0) {
+      throw new Error('No planets could be calculated successfully');
+    }
+    
+    if (!planets.sun || !planets.moon) {
+      throw new Error('Required planets (Sun and Moon) could not be calculated');
+    }
+    
+    logger.info(`Planet calculations completed`, { 
+      successful: successfulCalculations, 
+      total: planetList.length 
+    });
+    
+    return planets;
+    
+  } catch (error) {
+    logger.error('Planet calculation failed', { 
+      error: error.message,
+      jd_et
+    });
+    throw error;
+  }
+};
+
+const calculateHouses = (jd_ut, latitude, longitude, houseSystem = 'P') => {
+  try {
+    // Validate inputs
+    if (typeof jd_ut !== 'number' || isNaN(jd_ut)) {
+      throw new Error('Invalid Julian Day UT value for house calculations');
+    }
+    
+    validateCoordinates(latitude, longitude);
+    
+    // Validate house system
+    const validHouseSystems = ['P', 'K', 'O', 'R', 'C', 'A', 'V', 'W', 'X', 'H', 'T', 'B', 'M'];
+    if (!validHouseSystems.includes(houseSystem)) {
+      logger.warn(`Invalid house system ${houseSystem}, using Placidus (P)`);
+      houseSystem = 'P';
+    }
+    
+    if (!se || !se.houses_ex2 || !se.constants) {
+      throw new Error('Swiss Ephemeris not properly initialized for house calculations');
+    }
+    
+    const flags = se.constants.SEFLG_SWIEPH;
+    const result = se.houses_ex2(jd_ut, flags, latitude, longitude, houseSystem);
+    
+    // Validate result structure
+    if (!result || typeof result !== 'object') {
+      throw new Error('Invalid result structure from house calculation');
+    }
+    
+    if (result.flag < 0) {
+      throw new Error(`House calculation failed: ${result.error || 'Unknown Swiss Ephemeris error'}`);
+    }
+    
+    // Validate result data structure
+    if (!result.data || typeof result.data !== 'object') {
+      throw new Error('Invalid data structure returned from house calculation');
+    }
+    
+    // Check for houses array
+    if (!result.data.houses || !Array.isArray(result.data.houses) || result.data.houses.length < 12) {
+      throw new Error(`Insufficient house data: expected 12 houses, got ${result.data.houses ? result.data.houses.length : 0}`);
+    }
+    
+    // Check for points array (ascendant, MC, etc.)
+    if (!result.data.points || !Array.isArray(result.data.points) || result.data.points.length < 2) {
+      throw new Error(`Insufficient points data: expected at least 2 points, got ${result.data.points ? result.data.points.length : 0}`);
+    }
+    
+    logger.debug('House calculation successful', { 
+      flag: result.flag, 
+      houses_length: result.data.houses.length, 
+      points_length: result.data.points.length,
+      house_system: houseSystem
+    });
+    
+    const houses = {};
+    const houseNames = [
+      'first', 'second', 'third', 'fourth', 'fifth', 'sixth',
+      'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth'
+    ];
+    
+    // Validate and process house cusps
+    for (let i = 0; i < 12; i++) {
+      const cuspValue = result.data.houses[i];
+      
+      if (typeof cuspValue !== 'number' || isNaN(cuspValue)) {
+        throw new Error(`Invalid cusp value for ${houseNames[i]} house: ${cuspValue}`);
+      }
+      
+      // Normalize longitude to 0-360 range
+      const normalizedCusp = ((cuspValue % 360) + 360) % 360;
+      
+      houses[houseNames[i]] = {
+        cusp: normalizedCusp,
+        sign: getZodiacSign(normalizedCusp),
+        degree_in_sign: normalizedCusp % 30
+      };
+    }
+    
+    // Validate and process ascendant
+    const ascendantValue = result.data.points[0];
+    if (typeof ascendantValue !== 'number' || isNaN(ascendantValue)) {
+      throw new Error(`Invalid ascendant value: ${ascendantValue}`);
+    }
+    
+    const normalizedAscendant = ((ascendantValue % 360) + 360) % 360;
+    houses.ascendant = {
+      longitude: normalizedAscendant,
+      sign: getZodiacSign(normalizedAscendant),
+      degree_in_sign: normalizedAscendant % 30
+    };
+    
+    // Validate and process MC (Midheaven)
+    const mcValue = result.data.points[1];
+    if (typeof mcValue !== 'number' || isNaN(mcValue)) {
+      throw new Error(`Invalid MC value: ${mcValue}`);
+    }
+    
+    const normalizedMC = ((mcValue % 360) + 360) % 360;
+    houses.mc = {
+      longitude: normalizedMC,
+      sign: getZodiacSign(normalizedMC),
+      degree_in_sign: normalizedMC % 30
+    };
+    
+    // Additional validation: ensure ascendant and first house cusp match (they should be the same)
+    const ascFirstHouseDiff = Math.abs(normalizedAscendant - houses.first.cusp);
+    if (ascFirstHouseDiff > 1 && ascFirstHouseDiff < 359) { // Allow 1 degree tolerance
+      logger.warn('Ascendant and first house cusp mismatch', {
+        ascendant: normalizedAscendant,
+        first_house: houses.first.cusp,
+        difference: ascFirstHouseDiff
+      });
+    }
+    
+    logger.info('House calculation completed successfully', {
+      house_system: houseSystem,
+      ascendant_sign: houses.ascendant.sign,
+      mc_sign: houses.mc.sign
+    });
+    
+    return houses;
+    
+  } catch (error) {
+    logger.error('House calculation error', { 
+      error: error.message,
+      jd_ut,
+      latitude,
+      longitude,
+      houseSystem
+    });
+    throw error;
+  }
+};
+
+const calculateAspects = (planets) => {
+  try {
+    // Validate input
+    if (!planets || typeof planets !== 'object') {
+      throw new Error('Invalid planets object for aspect calculation');
+    }
+    
+    const planetNames = Object.keys(planets);
+    
+    if (planetNames.length < 2) {
+      logger.warn('Insufficient planets for aspect calculation', { count: planetNames.length });
+      return [];
+    }
+    
+    // Validate each planet has required longitude data
+    for (const planetName of planetNames) {
+      const planet = planets[planetName];
+      if (!planet || typeof planet !== 'object') {
+        throw new Error(`Invalid planet data for ${planetName}`);
+      }
+      
+      if (typeof planet.longitude !== 'number' || isNaN(planet.longitude)) {
+        throw new Error(`Invalid longitude for planet ${planetName}: ${planet.longitude}`);
+      }
+      
+      // Normalize longitude to 0-360 range
+      planet.longitude = ((planet.longitude % 360) + 360) % 360;
+    }
+    
+    const aspects = [];
+    
+    const aspectTypes = [
+      { name: 'conjunction', angle: 0, orb: 10 },
+      { name: 'opposition', angle: 180, orb: 10 },
+      { name: 'trine', angle: 120, orb: 8 },
+      { name: 'square', angle: 90, orb: 8 },
+      { name: 'sextile', angle: 60, orb: 6 }
+    ];
+    
+    // Calculate aspects between all planet pairs
+    for (let i = 0; i < planetNames.length; i++) {
+      for (let j = i + 1; j < planetNames.length; j++) {
+        const planet1 = planetNames[i];
+        const planet2 = planetNames[j];
+        
+        try {
+          const lon1 = planets[planet1].longitude;
+          const lon2 = planets[planet2].longitude;
+          
+          // Calculate angular difference
+          let diff = Math.abs(lon1 - lon2);
+          if (diff > 180) diff = 360 - diff;
+          
+          // Validate calculated difference
+          if (isNaN(diff) || diff < 0 || diff > 180) {
+            logger.warn(`Invalid angular difference calculated`, {
+              planet1,
+              planet2,
+              lon1,
+              lon2,
+              diff
+            });
+            continue;
+          }
+          
+          // Check for aspects
+          for (const aspectType of aspectTypes) {
+            const deviation = Math.abs(diff - aspectType.angle);
+            
+            // Validate aspect configuration
+            if (isNaN(aspectType.angle) || isNaN(aspectType.orb) || aspectType.orb <= 0) {
+              logger.warn(`Invalid aspect configuration`, { aspectType });
+              continue;
+            }
+            
+            if (deviation <= aspectType.orb) {
+              // Additional validation for exact aspects
+              if (deviation === 0) {
+                logger.debug(`Exact aspect found`, {
+                  planet1,
+                  planet2,
+                  aspect: aspectType.name,
+                  angle: diff
+                });
+              }
+              
+              aspects.push({
+                planet1,
+                planet2,
+                aspect: aspectType.name,
+                angle: aspectType.angle,
+                orb: parseFloat(deviation.toFixed(2)),
+                exact_angle: parseFloat(diff.toFixed(2)),
+                exact: deviation < 1 // Mark as exact if within 1 degree
+              });
+              break; // Only one aspect per planet pair
+            }
+          }
+        } catch (pairError) {
+          logger.error(`Error calculating aspect between ${planet1} and ${planet2}`, {
+            error: pairError.message,
+            planet1,
+            planet2
+          });
+          // Continue with other planet pairs
+        }
+      }
+    }
+    
+    // Sort aspects by orb (tightest first)
+    aspects.sort((a, b) => a.orb - b.orb);
+    
+    logger.debug('Aspect calculation completed', {
+      total_aspects: aspects.length,
+      exact_aspects: aspects.filter(a => a.exact).length,
+      planet_count: planetNames.length
+    });
+    
+    return aspects;
+    
+  } catch (error) {
+    logger.error('Aspect calculation error', {
+      error: error.message,
+      planets: planets ? Object.keys(planets) : 'undefined'
+    });
+    throw error;
+  }
+};
+
+const getZodiacSign = (longitude) => {
+  try {
+    // Validate input
+    if (typeof longitude !== 'number' || isNaN(longitude)) {
+      throw new Error(`Invalid longitude value for zodiac sign calculation: ${longitude}`);
+    }
+    
+    // Normalize longitude to 0-360 range
+    const normalizedLongitude = ((longitude % 360) + 360) % 360;
+    
+    const signs = [
+      'aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo',
+      'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces'
+    ];
+    
+    // Calculate sign index (each sign is 30 degrees)
+    const signIndex = Math.floor(normalizedLongitude / 30);
+    
+    // Validate sign index is within expected range
+    if (signIndex < 0 || signIndex >= 12) {
+      logger.error('Invalid sign index calculated', {
+        longitude: longitude,
+        normalizedLongitude: normalizedLongitude,
+        signIndex: signIndex
+      });
+      throw new Error(`Invalid sign index: ${signIndex} for longitude ${longitude}`);
+    }
+    
+    const sign = signs[signIndex];
+    
+    // Additional validation
+    if (!sign) {
+      throw new Error(`No sign found for index ${signIndex}`);
+    }
+    
+    logger.debug('Zodiac sign calculated', {
+      longitude: longitude,
+      normalizedLongitude: normalizedLongitude,
+      signIndex: signIndex,
+      sign: sign
+    });
+    
+    return sign;
+    
+  } catch (error) {
+    logger.error('Zodiac sign calculation error', {
+      error: error.message,
+      longitude: longitude
+    });
+    
+    // Return a safe fallback instead of throwing
+    return 'unknown';
+  }
+};
+
+const assignPlanetsToHouses = (planets, houses) => {
+  try {
+    // Validate inputs
+    if (!planets || typeof planets !== 'object') {
+      throw new Error('Invalid planets object for house assignment');
+    }
+    
+    if (!houses || typeof houses !== 'object') {
+      throw new Error('Invalid houses object for house assignment');
+    }
+    
+    const houseNames = [
+      'first', 'second', 'third', 'fourth', 'fifth', 'sixth',
+      'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth'
+    ];
+    
+    // Validate all required houses exist and extract cusps
+    const houseCusps = [];
+    for (let i = 0; i < 12; i++) {
+      const houseName = houseNames[i];
+      if (!houses[houseName] || typeof houses[houseName] !== 'object') {
+        throw new Error(`Missing or invalid house data for ${houseName}`);
+      }
+      
+      if (typeof houses[houseName].cusp !== 'number' || isNaN(houses[houseName].cusp)) {
+        throw new Error(`Invalid cusp value for ${houseName} house: ${houses[houseName].cusp}`);
+      }
+      
+      // Normalize cusp to 0-360 range
+      const normalizedCusp = ((houses[houseName].cusp % 360) + 360) % 360;
+      houseCusps.push(normalizedCusp);
+    }
+    
+    const planetNames = Object.keys(planets);
+    
+    if (planetNames.length === 0) {
+      logger.warn('No planets provided for house assignment');
+      return planets;
+    }
+    
+    let assignedPlanets = 0;
+    
+    for (const planetName of planetNames) {
+      try {
+        const planet = planets[planetName];
+        
+        // Validate planet data
+        if (!planet || typeof planet !== 'object') {
+          throw new Error(`Invalid planet data for ${planetName}`);
+        }
+        
+        if (typeof planet.longitude !== 'number' || isNaN(planet.longitude)) {
+          throw new Error(`Invalid longitude for planet ${planetName}: ${planet.longitude}`);
+        }
+        
+        // Normalize planet longitude
+        const planetLon = ((planet.longitude % 360) + 360) % 360;
+        let planetAssigned = false;
+        
+        for (let i = 0; i < 12; i++) {
+          const currentCusp = houseCusps[i];
+          const nextCusp = houseCusps[(i + 1) % 12];
+          
+          let inHouse = false;
+          
+          if (currentCusp < nextCusp) {
+            // Normal house (doesn't cross 0°)
+            inHouse = planetLon >= currentCusp && planetLon < nextCusp;
+          } else {
+            // House that crosses 0° Aries
+            inHouse = planetLon >= currentCusp || planetLon < nextCusp;
+          }
+          
+          if (inHouse) {
+            planets[planetName].house = i + 1;
+            planetAssigned = true;
+            assignedPlanets++;
+            
+            logger.debug(`Planet ${planetName} assigned to house ${i + 1}`, {
+              longitude: planetLon,
+              house_cusp: currentCusp,
+              next_cusp: nextCusp
+            });
+            
+            break;
+          }
+        }
+        
+        if (!planetAssigned) {
+          logger.error(`Failed to assign planet ${planetName} to any house`, {
+            longitude: planetLon,
+            planet_data: planet
+          });
+          
+          // Fallback: assign to first house if no house found
+          planets[planetName].house = 1;
+          planets[planetName].fallback_assignment = true;
+          assignedPlanets++;
+        }
+        
+      } catch (planetError) {
+        logger.error(`Error processing planet ${planetName}`, {
+          error: planetError.message,
+          planetData: planets[planetName]
+        });
+        // Continue with other planets
+      }
+    }
+    
+    logger.info('Planet-to-house assignment completed', {
+      total_planets: planetNames.length,
+      assigned_planets: assignedPlanets
+    });
+    
+    return planets;
+    
+  } catch (error) {
+    logger.error('Planet-to-house assignment error', {
+      error: error.message,
+      planets: planets ? Object.keys(planets) : 'undefined',
+      houses: houses ? Object.keys(houses) : 'undefined'
+    });
+    throw error;
+  }
+};
+
+// 🔮 Oroscopo Functions
+const generateDailyHoroscope = (sign) => {
+  const horoscopes = {
+    aries: {
+      overall: "Giornata ricca di energia per l'Ariete. Le stelle favoriscono nuovi inizi.",
+      love: "Venere porta armonia nelle relazioni. Momento ideale per dichiarazioni.",
+      work: "Marte spinge verso traguardi ambiziosi. Focus sui progetti creativi.",
+      health: "Energia alta, ma attenzione a non esagerare con lo stress."
+    },
+    taurus: {
+      overall: "Il Toro trova stabilità e serenità. Giornata perfetta per consolidare.",
+      love: "Relazioni stabili e profonde. Ideale per momenti romantici intimi.",
+      work: "Concentrazione e determinazione portano risultati concreti.",
+      health: "Benessere generale buono. Attenzione all'alimentazione."
+    },
+    gemini: {
+      overall: "Mercurio stimola la comunicazione. Giornata sociale e dinamica.",
+      love: "Conversazioni interessanti possono portare a nuovi incontri.",
+      work: "Networking e collaborazioni sono favoriti dalle stelle.",
+      health: "Mente attiva ma corpo che chiede riposo. Equilibrio importante."
+    },
+    cancer: {
+      overall: "La Luna guida le emozioni del Cancro verso l'armonia familiare.",
+      love: "Sentimenti profondi e legami che si rafforzano.",
+      work: "Intuito vincente nelle decisioni professionali.",
+      health: "Attenzione ai cambi di umore. Relax necessario."
+    },
+    leo: {
+      overall: "Il Sole illumina il cammino del Leone. Giornata di grande visibilità.",
+      love: "Fascino irresistibile e conquiste del cuore.",
+      work: "Leadership naturale emerge. Progetti in primo piano.",
+      health: "Vitalità al massimo. Energia da incanalare bene."
+    },
+    virgo: {
+      overall: "Precisione e metodo premiano la Vergine. Dettagli che fanno la differenza.",
+      love: "Attenzione ai piccoli gesti che rendono speciale la relazione.",
+      work: "Analisi accurate portano a soluzioni brillanti.",
+      health: "Routine salutari da mantenere. Corpo che ringrazia."
+    },
+    libra: {
+      overall: "Venere dona equilibrio e bellezza alla giornata della Bilancia.",
+      love: "Armonia e comprensione reciproca nelle relazioni.",
+      work: "Diplomazia e mediazione sono le tue armi vincenti.",
+      health: "Benessere psicofisico in equilibrio perfetto."
+    },
+    scorpio: {
+      overall: "Plutone intensifica le emozioni dello Scorpione. Trasformazioni positive.",
+      love: "Passione e profondità caratterizzano i rapporti amorosi.",
+      work: "Ricerche e investigazioni portano a scoperte importanti.",
+      health: "Energia rigenerativa alta. Ottimo per nuovi inizi."
+    },
+    sagittarius: {
+      overall: "Giove espande gli orizzonti del Sagittario. Avventure in vista.",
+      love: "Incontri internazionali o relazioni a distanza favorite.",
+      work: "Progetti di espansione e crescita professionale.",
+      health: "Movimento e sport sono essenziali per il benessere."
+    },
+    capricorn: {
+      overall: "Saturno premia la costanza del Capricorno. Risultati duraturi.",
+      love: "Relazioni serie e impegni a lungo termine.",
+      work: "Scalata verso il successo attraverso disciplina e pazienza.",
+      health: "Struttura e organizzazione anche per la salute."
+    },
+    aquarius: {
+      overall: "Urano porta innovazione nella vita dell'Acquario. Cambiamenti positivi.",
+      love: "Originalità e indipendenza attraggono partner affini.",
+      work: "Tecnologia e innovazione sono i settori vincenti.",
+      health: "Sperimentazione di nuovi metodi per il benessere."
+    },
+    pisces: {
+      overall: "Nettuno ispira la creatività dei Pesci. Giornata ricca di intuizioni.",
+      love: "Romantismo e sogni d'amore si materializzano.",
+      work: "Arte, musica e creatività sono favoriti dalle stelle.",
+      health: "Sensibilità alta richiede ambienti sereni e rilassanti."
+    }
+  };
+  
+  return horoscopes[sign] || horoscopes.aries;
+};
+
+// 🛣️ ROUTES
+
+// 📋 Health Check
+app.get('/v1/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'Astrology API',
+    version: '1.0.0',
+    swiss_ephemeris_version: se.version(),
+    swiss_ephemeris_available: swissEphAvailable,
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// ℹ️ API Info & AGPL Compliance
+app.get('/v1/info', (req, res) => {
+  res.json({
+    name: 'Astrology API',
+    version: '1.0.0',
+    description: 'Swiss Ephemeris API for astrological calculations and horoscopes',
+    swiss_ephemeris_version: se.version(),
+    license: 'AGPL-3.0',
+    source_code: 'https://github.com/your-username/astrology-api',
+    endpoints: [
+      'GET /v1/health',
+      'GET /v1/info',
+      'GET /v1/license',
+      'POST /v1/natal-chart',
+      'POST /v1/planets',
+      'POST /v1/houses',
+      'POST /v1/daily-horoscope',
+      'POST /v1/weekly-horoscope',
+      'POST /v1/ascendant'
+    ],
+    agpl_notice: 'This software is licensed under AGPL-3.0. Source code must be available to users.',
+    copyright: '© 2025 - Licensed under AGPL-3.0'
+  });
+});
+
+// 📄 License information endpoint (AGPL-3.0 compliance)
+app.get('/v1/license', (req, res) => {
+  res.json({
+    license: 'AGPL-3.0',
+    name: 'Astrology API',
+    description: 'API for astrological calculations using Swiss Ephemeris',
+    copyright: '© 2024 Astrology API Project',
+    source_code: 'https://github.com/randomuncle/astro-api', // TODO: Update with actual repository URL
+    license_text: 'https://www.gnu.org/licenses/agpl-3.0.html',
+    third_party_components: {
+      'Swiss Ephemeris': {
+        copyright: '© Astrodienst AG, Switzerland',
+        license: 'AGPL-3.0',
+        description: 'Ephemeris based on JPL Ephemeris DE431'
+      }
+    },
+    compliance_notice: 'This software is distributed under AGPL-3.0. If you use this software over a network, you must provide access to the complete source code including any modifications.',
+    agpl_requirements: {
+      network_use: 'If you make this software available to users over a network, you must provide access to the complete source code',
+      modifications: 'Any modifications must be released under the same AGPL-3.0 license',
+      commercial_use: 'Commercial use is permitted but source code disclosure is required for network services',
+      distribution: 'When distributing the software, you must include the license text and copyright notices'
+    },
+    legal_obligations: {
+      source_availability: 'Source code must be made available to all users of the network service',
+      license_preservation: 'All license notices and copyright statements must be preserved',
+      modification_disclosure: 'Any modifications to the original code must be clearly documented and disclosed'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 🌟 Main Natal Chart Endpoint
+app.post('/v1/natal-chart', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      birth_date, 
+      birth_time, 
+      latitude, 
+      longitude, 
+      timezone = 0,
+      house_system = 'P' 
+    } = req.body;
+    
+    // Enhanced input validation
+    if (!birth_date || !birth_time || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time', 'latitude', 'longitude'],
+        received: {
+          birth_date: !!birth_date,
+          birth_time: !!birth_time,
+          latitude: latitude !== undefined,
+          longitude: longitude !== undefined
+        }
+      });
+    }
+    
+    // Validate input types and ranges
+    try {
+      validateDateInput(birth_date, birth_time);
+      validateCoordinates(parseFloat(latitude), parseFloat(longitude));
+      validateTimezone(parseFloat(timezone));
+    } catch (validationError) {
+      return res.status(400).json({
+        error: 'Invalid input parameters',
+        details: validationError.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate house system
+    const validHouseSystems = ['P', 'K', 'O', 'R', 'C', 'A', 'V', 'W', 'X', 'H', 'T', 'B', 'M'];
+    if (!validHouseSystems.includes(house_system)) {
+      logger.warn(`Invalid house system ${house_system}, using Placidus (P)`);
+      house_system = 'P';
+    }
+    
+    const cacheKey = `natal:${birth_date}:${birth_time}:${latitude}:${longitude}:${timezone}:${house_system}`;
+    
+    // Enhanced cache handling
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        logger.info('Cache hit for natal chart', { cacheKey });
+        return res.json({ 
+          ...cached, 
+          cached: true,
+          cache_timestamp: new Date().toISOString()
+        });
+      }
+    } catch (cacheError) {
+      logger.warn('Cache read error', { error: cacheError.message, cacheKey });
+    }
+    
+    const startTime = Date.now();
+    let jd_et, jd_ut, planets, houses, aspects;
+    
+    // Enhanced Julian Day calculation with validation
+    try {
+      const julianResult = calculateJulianDay(birth_date, birth_time, timezone);
+      if (!Array.isArray(julianResult) || julianResult.length !== 2) {
+        throw new Error('Invalid Julian Day calculation result format');
+      }
+      [jd_et, jd_ut] = julianResult;
+      
+      if (!jd_et || !jd_ut || isNaN(jd_et) || isNaN(jd_ut)) {
+        throw new Error('Invalid Julian Day values calculated');
+      }
+    } catch (jdError) {
+      logger.error('Julian Day calculation failed', { 
+        error: jdError.message, 
+        birth_date, 
+        birth_time, 
+        timezone 
+      });
+      return res.status(400).json({
+        error: 'Invalid date/time parameters',
+        details: jdError.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Enhanced planet calculation with validation
+    try {
+      planets = calculatePlanets(jd_et);
+      if (!planets || typeof planets !== 'object' || Object.keys(planets).length === 0) {
+        throw new Error('No planets calculated or invalid result');
+      }
+    } catch (planetError) {
+      logger.error('Planet calculation failed', { 
+        error: planetError.message, 
+        jd_et 
+      });
+      return res.status(500).json({
+        error: 'Planet calculation failed',
+        details: planetError.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Enhanced house calculation with validation
+    try {
+      houses = calculateHouses(jd_ut, latitude, longitude, house_system);
+      if (!houses || typeof houses !== 'object' || !houses.ascendant) {
+        throw new Error('Invalid house calculation result');
+      }
+    } catch (houseError) {
+      logger.error('House calculation failed', { 
+        error: houseError.message, 
+        jd_ut, 
+        latitude, 
+        longitude, 
+        house_system 
+      });
+      return res.status(500).json({
+        error: 'House calculation failed',
+        details: houseError.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Enhanced planet-to-house assignment with validation
+    try {
+      planets = assignPlanetsToHouses(planets, houses);
+      if (!planets || typeof planets !== 'object') {
+        throw new Error('Planet-to-house assignment failed');
+      }
+    } catch (assignmentError) {
+      logger.error('Planet-to-house assignment failed', { 
+        error: assignmentError.message 
+      });
+      // Continue without house assignments rather than failing completely
+    }
+    
+    // Enhanced aspect calculation with validation
+    try {
+      aspects = calculateAspects(planets);
+      if (!Array.isArray(aspects)) {
+        throw new Error('Invalid aspects calculation result');
+      }
+    } catch (aspectError) {
+      logger.error('Aspect calculation failed', { 
+        error: aspectError.message 
+      });
+      // Continue without aspects rather than failing completely
+      aspects = [];
+    }
+    
+    const calculationTime = Date.now() - startTime;
+    
+    const result = {
+      birth_info: {
+        date: birth_date,
+        time: birth_time,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        timezone: parseFloat(timezone),
+        house_system,
+        julian_day_et: jd_et,
+        julian_day_ut: jd_ut
+      },
+      planets,
+      houses,
+      aspects,
+      metadata: {
+        calculation_time_ms: calculationTime,
+        swiss_ephemeris_version: se.version(),
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable,
+        planets_count: Object.keys(planets).length,
+        aspects_count: aspects.length,
+        cached: false
+      }
+    };
+    
+    // Enhanced cache storage with error handling
+    try {
+      await setCache(cacheKey, result, 3600 * 24);
+      logger.debug('Natal chart cached successfully', { cacheKey });
+    } catch (cacheError) {
+      logger.warn('Cache write error', { error: cacheError.message, cacheKey });
+    }
+    
+    logger.info('Natal chart calculated successfully', {
+      calculation_time: calculationTime,
+      planets_count: Object.keys(planets).length,
+      aspects_count: aspects.length,
+      house_system,
+      using_mock: !swissEphAvailable
+    });
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Natal chart calculation failed', { 
+      error: error.message, 
+      stack: error.stack,
+      body: req.body
+    });
+    
+    res.status(500).json({
+      error: 'Internal server error during natal chart calculation',
+      message: error.message,
+      timestamp: new Date().toISOString(),
+      request_id: req.headers['x-request-id'] || 'unknown'
+    });
+  }
+});
+
+// 🪐 Planets Only Endpoint
+app.post('/v1/planets', authenticateApiKey, async (req, res) => {
+  try {
+    const { birth_date, birth_time, timezone = 0 } = req.body;
+    
+    if (!birth_date || !birth_time) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time']
+      });
+    }
+    
+    const [jd_et] = calculateJulianDay(birth_date, birth_time, timezone);
+    const planets = calculatePlanets(jd_et);
+    
+    const result = {
+      birth_info: { date: birth_date, time: birth_time, timezone },
+      planets,
+      metadata: {
+        swiss_ephemeris_version: se.version(),
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Planets calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🏠 Houses Only Endpoint
+app.post('/v1/houses', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      birth_date, 
+      birth_time, 
+      latitude, 
+      longitude, 
+      timezone = 0,
+      house_system = 'P' 
+    } = req.body;
+    
+    if (!birth_date || !birth_time || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time', 'latitude', 'longitude']
+      });
+    }
+    
+    const [, jd_ut] = calculateJulianDay(birth_date, birth_time, timezone);
+    const houses = calculateHouses(jd_ut, latitude, longitude, house_system);
+    
+    const result = {
+      birth_info: { date: birth_date, time: birth_time, latitude, longitude, timezone, house_system },
+      houses,
+      metadata: {
+        swiss_ephemeris_version: se.version(),
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Houses calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🌅 Ascendant Only Endpoint
+app.post('/v1/ascendant', authenticateApiKey, async (req, res) => {
+  try {
+    const { birth_date, birth_time, latitude, longitude, timezone = 0 } = req.body;
+    
+    if (!birth_date || !birth_time || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time', 'latitude', 'longitude']
+      });
+    }
+    
+    const [, jd_ut] = calculateJulianDay(birth_date, birth_time, timezone);
+    console.log('🌅 Ascendant endpoint - Julian Day calculated', { jd_ut, birth_date, birth_time, timezone });
+    const houses = calculateHouses(jd_ut, latitude, longitude, 'P');
+    console.log('🌅 Ascendant endpoint - Houses calculated', { ascendant: houses.ascendant, mc: houses.mc });
+    
+    const result = {
+      birth_info: { date: birth_date, time: birth_time, latitude, longitude, timezone },
+      ascendant: houses.ascendant,
+      mc: houses.mc,
+      metadata: {
+        swiss_ephemeris_version: se.version(),
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Ascendant calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🔮 Daily Horoscope Endpoint
+app.post('/v1/daily-horoscope', authenticateApiKey, async (req, res) => {
+  try {
+    const { sign, date = new Date().toISOString().split('T')[0] } = req.body;
+    
+    if (!sign) {
+      return res.status(400).json({
+        error: 'Missing required field: sign',
+        valid_signs: ['aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo', 
+                     'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces']
+      });
+    }
+    
+    const cacheKey = `daily_horoscope:${sign}:${date}`;
+    const cached = await getFromCache(cacheKey);
+    
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
+    
+    // Calcola posizioni planetarie per oggi
+    const [jd_et] = calculateJulianDay(date, '12:00:00', 0);
+    const currentPlanets = calculatePlanets(jd_et);
+    
+    // Genera interpretazione
+    const interpretation = generateDailyHoroscope(sign);
+    
+    const result = {
+      sign,
+      date,
+      current_planets: currentPlanets,
+      interpretation: {
+        overall: interpretation.overall,
+        love: interpretation.love,
+        work: interpretation.work,
+        health: interpretation.health,
+        lucky_numbers: [
+          Math.floor(Math.random() * 50) + 1,
+          Math.floor(Math.random() * 50) + 1,
+          Math.floor(Math.random() * 50) + 1
+        ],
+        colors: ['blu', 'verde', 'oro'],
+        rating: {
+          overall: Math.floor(Math.random() * 3) + 3, // 3-5 stelle
+          love: Math.floor(Math.random() * 3) + 3,
+          work: Math.floor(Math.random() * 3) + 3,
+          health: Math.floor(Math.random() * 3) + 3
+        }
+      },
+      metadata: {
+        calculation_time_ms: 50,
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    await setCache(cacheKey, result, 3600 * 6); // Cache 6 ore
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Daily horoscope calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 📅 Weekly Horoscope Endpoint
+app.post('/v1/weekly-horoscope', authenticateApiKey, async (req, res) => {
+  try {
+    const { sign, start_date = getMonday() } = req.body;
+    
+    if (!sign) {
+      return res.status(400).json({
+        error: 'Missing required field: sign',
+        valid_signs: ['aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo', 
+                     'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces']
+      });
+    }
+    
+    const cacheKey = `weekly_horoscope:${sign}:${start_date}`;
+    const cached = await getFromCache(cacheKey);
+    
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
+    
+    const weekDays = [];
+    
+    // Calcola per ogni giorno della settimana
+    for (let i = 0; i < 7; i++) {
+      const currentDate = new Date(start_date);
+      currentDate.setDate(currentDate.getDate() + i);
+      const dateString = currentDate.toISOString().split('T')[0];
+      
+      const [jd_et] = calculateJulianDay(dateString, '12:00:00', 0);
+      const dayPlanets = calculatePlanets(jd_et);
+      const dailyHoroscope = generateDailyHoroscope(sign);
+      
+      weekDays.push({
+        date: dateString,
+        day_name: currentDate.toLocaleDateString('it-IT', { weekday: 'long' }),
+        planets: dayPlanets,
+        daily_focus: dailyHoroscope.overall,
+        energy_level: Math.floor(Math.random() * 3) + 3 // 3-5
+      });
+    }
+    
+    const endDate = new Date(start_date);
+    endDate.setDate(endDate.getDate() + 6);
+    
+    const result = {
+      sign,
+      week_start: start_date,
+      week_end: endDate.toISOString().split('T')[0],
+      daily_breakdown: weekDays,
+      weekly_themes: [
+        "Focus sulla crescita personale",
+        "Relazioni interpersonali in primo piano",
+        "Opportunità di carriera si presentano"
+      ],
+      key_dates: [
+        {
+          date: weekDays[2].date,
+          event: "Giornata particolarmente favorevole per nuovi progetti"
+        },
+        {
+          date: weekDays[5].date,
+          event: "Attenzione alle comunicazioni, possibili malintesi"
+        }
+      ],
+      overall_forecast: `Settimana dinamica per ${sign}. Le stelle favoriscono cambiamenti positivi e nuove opportunità.`,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    await setCache(cacheKey, result, 3600 * 24); // Cache 24 ore
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Weekly horoscope calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🗓️ Monthly Horoscope Endpoint  
+app.post('/v1/monthly-horoscope', authenticateApiKey, async (req, res) => {
+  try {
+    const { sign, year = new Date().getFullYear(), month = new Date().getMonth() + 1 } = req.body;
+    
+    if (!sign) {
+      return res.status(400).json({
+        error: 'Missing required field: sign',
+        valid_signs: ['aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo', 
+                     'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces']
+      });
+    }
+    
+    const cacheKey = `monthly_horoscope:${sign}:${year}:${month}`;
+    const cached = await getFromCache(cacheKey);
+    
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
+    
+    const monthNames = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno',
+                       'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'];
+    
+    const result = {
+      sign,
+      year,
+      month,
+      month_name: monthNames[month - 1],
+      interpretation: {
+        overview: `${monthNames[month - 1]} sarà un mese di trasformazione per ${sign}. Le energie cosmiche favoriscono crescita e rinnovamento.`,
+        love_relationships: "Venere porta armonia nelle relazioni esistenti e possibilità di nuovi incontri per i single.",
+        career_money: "Opportunità professionali interessanti si presentano a metà mese. Focus su progetti creativi.",
+        health_wellness: "Energia in crescita. Importante mantenere equilibrio tra lavoro e riposo.",
+        key_dates: [
+          { date: `${year}-${month.toString().padStart(2, '0')}-07`, event: "Giornata ideale per decisioni importanti" },
+          { date: `${year}-${month.toString().padStart(2, '0')}-15`, event: "Possibili tensioni da gestire con diplomazia" },
+          { date: `${year}-${month.toString().padStart(2, '0')}-23`, event: "Momento favorevole per progetti creativi" }
+        ],
+        advice: "Mantieni apertura mentale verso i cambiamenti. Le stelle supportano la tua evoluzione personale."
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    await setCache(cacheKey, result, 3600 * 48); // Cache 48 ore
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Monthly horoscope calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🎯 Personal Forecast Endpoint (simplified)
+app.post('/v1/personal-forecast', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      birth_date, 
+      birth_time, 
+      latitude, 
+      longitude, 
+      period_days = 30 
+    } = req.body;
+    
+    if (!birth_date || !birth_time || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time', 'latitude', 'longitude']
+      });
+    }
+    
+    // Calcola carta natale
+    const [natal_jd_et, natal_jd_ut] = calculateJulianDay(birth_date, birth_time, 0);
+    const natalPlanets = calculatePlanets(natal_jd_et);
+    const natalHouses = calculateHouses(natal_jd_ut, latitude, longitude, 'P');
+    
+    const today = new Date().toISOString().split('T')[0];
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + period_days);
+    
+    const result = {
+      birth_info: {
+        date: birth_date,
+        time: birth_time,
+        location: { latitude, longitude }
+      },
+      forecast_period: {
+        start_date: today,
+        end_date: endDate.toISOString().split('T')[0],
+        days: period_days
+      },
+      natal_chart_summary: {
+        sun_sign: natalPlanets.sun.sign,
+        moon_sign: natalPlanets.moon.sign,
+        ascendant_sign: natalHouses.ascendant.sign
+      },
+      personal_forecast: {
+        overall_theme: "Periodo di crescita personale e nuove opportunità in arrivo.",
+        key_opportunities: [
+          "Nuovi progetti creativi prenderanno forma",
+          "Relazioni interpersonali si approfondiscono",
+          "Opportunità di apprendimento si presentano"
+        ],
+        challenges_to_watch: [
+          "Attenzione a non sovraccaricarsi di impegni",
+          "Comunicazione chiara evita malintesi"
+        ],
+        best_days: [
+          {
+            date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            reason: "Energia favorevole per nuovi inizi"
+          },
+          {
+            date: new Date(Date.now() + 12 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            reason: "Giornata ideale per relazioni e collaborazioni"
+          }
+        ],
+        advice: "Mantieni equilibrio tra ambizione e pazienza. Le stelle supportano la tua crescita graduale."
+      },
+      significant_transits: [],
+      metadata: {
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable
+      }
+    };
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Personal forecast calculation failed', { error: error.message });
+    res.status(500).json({ error: 'Calculation failed', message: error.message });
+  }
+});
+
+// 🔧 Helper function
+function getMonday() {
+  const today = new Date();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - today.getDay() + 1);
+  return monday.toISOString().split('T')[0];
+}
+
+// 🌍 GEOCODING ENDPOINTS
+
+// 🌍 Geocoding: City name → Coordinates
+app.post('/v1/geocoding', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      query, 
+      country = null, 
+      limit = 10, 
+      min_population = 0 
+    } = req.body;
+    
+    if (!query || typeof query !== 'string' || query.trim().length < 2) {
+      return res.status(400).json({
+        error: 'Invalid query',
+        message: 'Query must be at least 2 characters long',
+        required: ['query']
+      });
+    }
+    
+    const cacheKey = `geocoding:${query}:${country || 'all'}:${limit}:${min_population}`;
+    
+    // Check cache first
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json({ ...cached, cached: true });
+      }
+    } catch (cacheError) {
+      logger.warn('Geocoding cache read error', { error: cacheError.message });
+    }
+    
+    const startTime = Date.now();
+    
+    const result = await geocodingService.geocode(query, {
+      country,
+      limit: Math.min(limit, 50), // Max 50 results
+      minPopulation: min_population
+    });
+    
+    const calculationTime = Date.now() - startTime;
+    
+    const response = {
+      ...result,
+      metadata: {
+        calculation_time_ms: calculationTime,
+        timestamp: new Date().toISOString(),
+        cached: false
+      }
+    };
+    
+    // Cache successful results
+    if (result.success && result.results.length > 0) {
+      try {
+        await setCache(cacheKey, response, 3600 * 24 * 7); // Cache 1 week
+      } catch (cacheError) {
+        logger.warn('Geocoding cache write error', { error: cacheError.message });
+      }
+    }
+    
+    logger.info('Geocoding search completed', {
+      query,
+      results_count: result.results.length,
+      calculation_time: calculationTime
+    });
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Geocoding search failed', { 
+      error: error.message,
+      query: req.body.query 
+    });
+    
+    res.status(500).json({
+      error: 'Geocoding search failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 🌍 Reverse Geocoding: Coordinates → City
+app.post('/v1/reverse-geocoding', authenticateApiKey, async (req, res) => {
+  try {
+    const { latitude, longitude, radius = 50 } = req.body;
+    
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        error: 'Missing coordinates',
+        required: ['latitude', 'longitude']
+      });
+    }
+    
+    try {
+      validateCoordinates(parseFloat(latitude), parseFloat(longitude));
+    } catch (validationError) {
+      return res.status(400).json({
+        error: 'Invalid coordinates',
+        details: validationError.message
+      });
+    }
+    
+    const lat = parseFloat(latitude);
+    const lon = parseFloat(longitude);
+    const searchRadius = Math.min(Math.max(radius, 1), 200); // 1-200km range
+    
+    const cacheKey = `reverse_geocoding:${lat.toFixed(4)}:${lon.toFixed(4)}:${searchRadius}`;
+    
+    // Check cache first
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json({ ...cached, cached: true });
+      }
+    } catch (cacheError) {
+      logger.warn('Reverse geocoding cache read error', { error: cacheError.message });
+    }
+    
+    const startTime = Date.now();
+    
+    const result = await geocodingService.reverseGeocode(lat, lon, {
+      radius: searchRadius
+    });
+    
+    const calculationTime = Date.now() - startTime;
+    
+    const response = {
+      ...result,
+      metadata: {
+        calculation_time_ms: calculationTime,
+        timestamp: new Date().toISOString(),
+        cached: false
+      }
+    };
+    
+    // Cache successful results
+    if (result.success && result.results.length > 0) {
+      try {
+        await setCache(cacheKey, response, 3600 * 24); // Cache 1 day
+      } catch (cacheError) {
+        logger.warn('Reverse geocoding cache write error', { error: cacheError.message });
+      }
+    }
+    
+    logger.info('Reverse geocoding completed', {
+      latitude: lat,
+      longitude: lon,
+      results_count: result.results.length,
+      calculation_time: calculationTime
+    });
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Reverse geocoding failed', { 
+      error: error.message,
+      coordinates: { latitude: req.body.latitude, longitude: req.body.longitude }
+    });
+    
+    res.status(500).json({
+      error: 'Reverse geocoding failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 🌍 Geocoding Stats and Info
+app.get('/v1/geocoding/stats', authenticateApiKey, async (req, res) => {
+  try {
+    const stats = geocodingService.getStats();
+    
+    res.json({
+      geocoding_service: {
+        ...stats,
+        database_type: 'GeoNames Local',
+        features: [
+          'City name search',
+          'Reverse geocoding',
+          'Country filtering',
+          'Population filtering',
+          'Fuzzy matching',
+          'Multi-language support'
+        ]
+      },
+      metadata: {
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Geocoding stats failed', { error: error.message });
+    
+    res.status(500).json({
+      error: 'Failed to get geocoding stats',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 🌟 Enhanced Natal Chart with Auto-Geocoding
+app.post('/v1/natal-chart-geocoded', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      birth_date, 
+      birth_time, 
+      birth_place,  // NEW: Alternative to lat/lon
+      latitude, 
+      longitude, 
+      timezone = 0,
+      house_system = 'P' 
+    } = req.body;
+    
+    if (!birth_date || !birth_time) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['birth_date', 'birth_time', 'birth_place OR (latitude, longitude)']
+      });
+    }
+    
+    let finalLat, finalLon, resolvedPlace = null;
+    
+    // Auto-geocoding if birth_place provided
+    if (birth_place) {
+      try {
+        const geocodeResult = await geocodingService.geocode(birth_place, { limit: 1 });
+        
+        if (geocodeResult.success && geocodeResult.results.length > 0) {
+          const bestResult = geocodeResult.results[0];
+          finalLat = bestResult.latitude;
+          finalLon = bestResult.longitude;
+          resolvedPlace = bestResult.formatted;
+          
+          logger.info('Auto-geocoding successful', {
+            birth_place,
+            resolved: resolvedPlace,
+            coordinates: { lat: finalLat, lon: finalLon }
+          });
+        } else {
+          return res.status(400).json({
+            error: 'Geocoding failed',
+            message: `Could not find coordinates for "${birth_place}"`,
+            suggestion: 'Try providing latitude and longitude directly'
+          });
+        }
+      } catch (geocodeError) {
+        return res.status(400).json({
+          error: 'Geocoding error',
+          message: geocodeError.message,
+          birth_place
+        });
+      }
+    } else if (latitude !== undefined && longitude !== undefined) {
+      // Use provided coordinates
+      try {
+        validateCoordinates(parseFloat(latitude), parseFloat(longitude));
+        finalLat = parseFloat(latitude);
+        finalLon = parseFloat(longitude);
+      } catch (validationError) {
+        return res.status(400).json({
+          error: 'Invalid coordinates',
+          details: validationError.message
+        });
+      }
+    } else {
+      return res.status(400).json({
+        error: 'Missing location data',
+        message: 'Provide either birth_place OR (latitude, longitude)'
+      });
+    }
+    
+    // Now calculate natal chart with resolved coordinates
+    const cacheKey = `natal_geocoded:${birth_date}:${birth_time}:${finalLat.toFixed(4)}:${finalLon.toFixed(4)}:${timezone}:${house_system}`;
+    
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json({ 
+          ...cached, 
+          cached: true,
+          resolved_place: resolvedPlace
+        });
+      }
+    } catch (cacheError) {
+      logger.warn('Natal chart geocoded cache read error', { error: cacheError.message });
+    }
+    
+    // Validate and calculate
+    try {
+      validateDateInput(birth_date, birth_time);
+      validateTimezone(parseFloat(timezone));
+    } catch (validationError) {
+      return res.status(400).json({
+        error: 'Invalid input parameters',
+        details: validationError.message
+      });
+    }
+    
+    const startTime = Date.now();
+    
+    // Calculate Julian Day
+    const [jd_et, jd_ut] = calculateJulianDay(birth_date, birth_time, timezone);
+    
+    // Calculate planets, houses, and aspects
+    const planets = calculatePlanets(jd_et);
+    const houses = calculateHouses(jd_ut, finalLat, finalLon, house_system);
+    const planetsWithHouses = assignPlanetsToHouses(planets, houses);
+    const aspects = calculateAspects(planetsWithHouses);
+    
+    const calculationTime = Date.now() - startTime;
+    
+    const result = {
+      birth_info: {
+        date: birth_date,
+        time: birth_time,
+        original_place: birth_place || null,
+        resolved_place: resolvedPlace,
+        latitude: finalLat,
+        longitude: finalLon,
+        timezone: parseFloat(timezone),
+        house_system,
+        julian_day_et: jd_et,
+        julian_day_ut: jd_ut
+      },
+      planets: planetsWithHouses,
+      houses,
+      aspects,
+      metadata: {
+        calculation_time_ms: calculationTime,
+        geocoding_used: !!birth_place,
+        swiss_ephemeris_version: se.version(),
+        timestamp: new Date().toISOString(),
+        using_mock_data: !swissEphAvailable,
+        planets_count: Object.keys(planetsWithHouses).length,
+        aspects_count: aspects.length,
+        cached: false
+      }
+    };
+    
+    // Cache the result
+    try {
+      await setCache(cacheKey, result, 3600 * 24);
+    } catch (cacheError) {
+      logger.warn('Natal chart geocoded cache write error', { error: cacheError.message });
+    }
+    
+    logger.info('Natal chart with geocoding calculated successfully', {
+      calculation_time: calculationTime,
+      birth_place,
+      resolved_place: resolvedPlace,
+      geocoding_used: !!birth_place
+    });
+    
+    res.json(result);
+    
+  } catch (error) {
+    logger.error('Natal chart with geocoding failed', { 
+      error: error.message,
+      body: req.body
+    });
+    
+    res.status(500).json({
+      error: 'Natal chart calculation failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 🔍 AUTOCOMPLETE ENDPOINTS
+
+// 🚀 FAST AUTOCOMPLETE ENDPOINT
+app.get('/v1/geocoding/autocomplete', async (req, res) => {
+  try {
+    const { 
+      q: query,
+      limit = 8,
+      country = null,
+      min_population = 10000,
+      italian_priority = true
+    } = req.query;
+    
+    // Validazione query
+    if (!query || typeof query !== 'string' || query.trim().length < 2) {
+      return res.status(400).json({
+        error: 'Invalid query',
+        message: 'Query parameter "q" must be at least 2 characters long',
+        example: '/v1/geocoding/autocomplete?q=Milan'
+      });
+    }
+    
+    const searchQuery = query.trim();
+    const cacheKey = `autocomplete:${searchQuery}:${country || 'all'}:${limit}:${min_population}:${italian_priority}`;
+    
+    // Check cache first (molto importante per autocomplete!)
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json({ ...cached, cached: true });
+      }
+    } catch (cacheError) {
+      logger.warn('Autocomplete cache read error', { error: cacheError.message });
+    }
+    
+    const startTime = Date.now();
+    
+    // Opzioni ottimizzate per autocomplete
+    const searchOptions = {
+      limit: Math.min(parseInt(limit), 20), // Max 20 per performance
+      country: country || null,
+      minPopulation: parseInt(min_population),
+      prioritizeItaly: italian_priority === 'true' || italian_priority === true
+    };
+    
+    // Usa il geocoding service con opzioni specifiche per autocomplete
+    const result = await geocodingService.geocode(searchQuery, searchOptions);
+    
+    if (!result.success) {
+      return res.json({
+        success: false,
+        query: searchQuery,
+        suggestions: [],
+        count: 0,
+        metadata: {
+          calculation_time_ms: Date.now() - startTime,
+          timestamp: new Date().toISOString(),
+          cached: false
+        }
+      });
+    }
+    
+    // Formato ottimizzato per autocomplete (meno dati per velocità)
+    const suggestions = result.results.map(city => ({
+      id: `${city.name}_${city.country}_${city.latitude}_${city.longitude}`,
+      name: city.name,
+      country: city.country,
+      country_name: getCountryName(city.country),
+      formatted: `${city.name}, ${getCountryName(city.country)}`,
+      population: city.population,
+      coordinates: {
+        lat: city.latitude,
+        lon: city.longitude
+      },
+      confidence: city.confidence,
+      is_italian: city.is_italian || false,
+      // Solo i primi 3 nomi alternativi per non appesantire
+      alternate_names: (city.alternate_names || []).slice(0, 3)
+    }));
+    
+    const calculationTime = Date.now() - startTime;
+    
+    const response = {
+      success: true,
+      query: searchQuery,
+      suggestions: suggestions,
+      count: suggestions.length,
+      metadata: {
+        calculation_time_ms: calculationTime,
+        timestamp: new Date().toISOString(),
+        cached: false,
+        search_options: searchOptions
+      }
+    };
+    
+    // Cache più aggressivo per autocomplete (1 ora)
+    try {
+      await setCache(cacheKey, response, 3600);
+    } catch (cacheError) {
+      logger.warn('Autocomplete cache write error', { error: cacheError.message });
+    }
+    
+    logger.info('Autocomplete search completed', {
+      query: searchQuery,
+      results_count: suggestions.length,
+      calculation_time: calculationTime,
+      italian_priority: searchOptions.prioritizeItaly
+    });
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Autocomplete search failed', { 
+      error: error.message,
+      query: req.query.q 
+    });
+    
+    res.status(500).json({
+      success: false,
+      error: 'Autocomplete search failed',
+      message: error.message,
+      query: req.query.q || '',
+      suggestions: [],
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 🎯 SMART AUTOCOMPLETE ENDPOINT (con AI-like features)
+app.get('/v1/geocoding/smart-autocomplete', async (req, res) => {
+  try {
+    const { 
+      q: query,
+      limit = 6,
+      country = null,
+      context = 'general' // 'astrology', 'travel', 'general'
+    } = req.query;
+    
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({
+        error: 'Query too short',
+        message: 'Query must be at least 2 characters'
+      });
+    }
+    
+    const searchQuery = query.trim();
+    const startTime = Date.now();
+    
+    // Context-aware search parameters
+    let searchOptions = {
+      limit: parseInt(limit) * 2, // Cerca più risultati per poi filtrare
+      prioritizeItaly: true
+    };
+    
+    // Adatta i parametri in base al contesto
+    switch (context) {
+      case 'astrology':
+        searchOptions.minPopulation = 50000; // Città più grandi per astrologia
+        searchOptions.prioritizeItaly = true;
+        break;
+      case 'travel':
+        searchOptions.minPopulation = 20000;
+        searchOptions.prioritizeItaly = false; // Più internazionale
+        break;
+      default:
+        searchOptions.minPopulation = 10000;
+    }
+    
+    if (country) {
+      searchOptions.country = country;
+    }
+    
+    const result = await geocodingService.geocode(searchQuery, searchOptions);
+    
+    if (!result.success) {
+      return res.json({
+        success: false,
+        query: searchQuery,
+        suggestions: [],
+        smart_suggestions: [],
+        count: 0
+      });
+    }
+    
+    // Smart filtering e categorizzazione
+    const cities = result.results;
+    const smartSuggestions = [];
+    
+    // 1. Città principali (>500k abitanti)
+    const majorCities = cities.filter(c => c.population > 500000).slice(0, 3);
+    if (majorCities.length > 0) {
+      smartSuggestions.push({
+        category: 'Città Principali',
+        category_en: 'Major Cities',
+        cities: majorCities.map(formatSmartCity)
+      });
+    }
+    
+    // 2. Città italiane (se non è già tutto italiano)
+    const italianCities = cities.filter(c => c.is_italian && c.population > 20000).slice(0, 4);
+    if (italianCities.length > 0 && !country) {
+      smartSuggestions.push({
+        category: 'Italia',
+        category_en: 'Italy',
+        cities: italianCities.map(formatSmartCity)
+      });
+    }
+    
+    // 3. Altre città rilevanti
+    const otherCities = cities
+      .filter(c => !c.is_italian || country === 'IT')
+      .filter(c => c.population > 50000)
+      .slice(0, 3);
+    
+    if (otherCities.length > 0) {
+      smartSuggestions.push({
+        category: country ? 'Altre Città' : 'Mondo',
+        category_en: country ? 'Other Cities' : 'World',
+        cities: otherCities.map(formatSmartCity)
+      });
+    }
+    
+    // Suggerimenti semplici (backward compatibility)
+    const simpleSuggestions = cities.slice(0, parseInt(limit)).map(city => ({
+      id: `${city.name}_${city.country}`,
+      name: city.name,
+      country: city.country,
+      formatted: `${city.name}, ${getCountryName(city.country)}`,
+      coordinates: {
+        lat: city.latitude,
+        lon: city.longitude
+      },
+      population: city.population,
+      is_italian: city.is_italian || false
+    }));
+    
+    const response = {
+      success: true,
+      query: searchQuery,
+      suggestions: simpleSuggestions,
+      smart_suggestions: smartSuggestions,
+      count: simpleSuggestions.length,
+      context: context,
+      metadata: {
+        calculation_time_ms: Date.now() - startTime,
+        timestamp: new Date().toISOString(),
+        total_found: cities.length
+      }
+    };
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Smart autocomplete failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Smart autocomplete failed',
+      message: error.message
+    });
+  }
+});
+
+// 🔥 SUPER FAST TYPEAHEAD (per typing in tempo reale)
+app.get('/v1/geocoding/typeahead', async (req, res) => {
+  try {
+    const { q: query, limit = 5 } = req.query;
+    
+    if (!query || query.length < 2) {
+      return res.json({
+        success: true,
+        query: query || '',
+        results: []
+      });
+    }
+    
+    const searchQuery = query.trim().toLowerCase();
+    
+    // Cache aggressivo per typeahead
+    const cacheKey = `typeahead:${searchQuery}:${limit}`;
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json(cached);
+      }
+    } catch (cacheError) {
+      // Ignore cache errors per performance
+    }
+    
+    // Ricerca ultra veloce - solo nomi che iniziano con la query
+    const results = geocodingService.searchCities(searchQuery, {
+      limit: parseInt(limit),
+      exactMatch: false,
+      prioritizeItaly: true,
+      minPopulation: 50000 // Solo città grandi per velocità
+    });
+    
+    const typeaheadResults = results.slice(0, parseInt(limit)).map(city => ({
+      text: `${city.name}, ${getCountryName(city.country)}`,
+      value: `${city.name}`,
+      data: {
+        name: city.name,
+        country: city.country,
+        lat: city.lat,
+        lon: city.lon,
+        population: city.pop
+      }
+    }));
+    
+    const response = {
+      success: true,
+      query: searchQuery,
+      results: typeaheadResults
+    };
+    
+    // Cache 30 minuti per typeahead
+    try {
+      await setCache(cacheKey, response, 1800);
+    } catch (cacheError) {
+      // Ignore
+    }
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Typeahead failed', { error: error.message });
+    res.json({
+      success: false,
+      query: req.query.q || '',
+      results: []
+    });
+  }
+});
+
+// 📍 POPULAR CITIES ENDPOINT (per suggerimenti iniziali)
+app.get('/v1/geocoding/popular-cities', async (req, res) => {
+  try {
+    const { 
+      country = null, 
+      limit = 20,
+      italian_priority = true 
+    } = req.query;
+    
+    const cacheKey = `popular_cities:${country || 'all'}:${limit}:${italian_priority}`;
+    
+    try {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return res.json({ ...cached, cached: true });
+      }
+    } catch (cacheError) {
+      logger.warn('Popular cities cache error', { error: cacheError.message });
+    }
+    
+    // Lista città popolari predefinite con boost
+    const popularCityBoosts = {
+      'Milano': 5000000,
+      'Milan': 5000000,
+      'Roma': 4500000,
+      'Rome': 4500000,
+      'Napoli': 1500000,
+      'Naples': 1500000,
+      'Torino': 1200000,
+      'Turin': 1200000,
+      'Firenze': 1000000,
+      'Florence': 1000000,
+      'Bologna': 800000,
+      'Genova': 700000,
+      'Genoa': 700000,
+      'Venezia': 600000,
+      'Venice': 600000,
+      'Palermo': 800000,
+      'Bari': 500000,
+      'Catania': 450000,
+      'Verona': 400000,
+      'Padova': 350000,
+      'Trieste': 300000,
+      'Brescia': 350000,
+      'Parma': 300000,
+      'Modena': 280000,
+      'Reggio Emilia': 250000,
+      'Perugia': 250000,
+      'Livorno': 200000,
+      'Cagliari': 400000,
+      'London': 3000000,
+      'Paris': 2800000,
+      'Berlin': 2500000,
+      'Madrid': 2200000,
+      'Barcelona': 2000000,
+      'Amsterdam': 1500000,
+      'Vienna': 1400000,
+      'Prague': 1300000,
+      'Brussels': 1200000,
+      'Zurich': 1000000
+    };
+    
+    let cities = geocodingService.cities || [];
+    
+    // Filtra per paese se specificato
+    if (country) {
+      cities = cities.filter(city => 
+        city.country.toLowerCase() === country.toLowerCase()
+      );
+    }
+    
+    // Ordina per popolazione + boost + priorità italiana
+    const sortedCities = cities
+      .filter(city => city.pop > 50000) // Solo città rilevanti
+      .sort((a, b) => {
+        // Priorità Italia se abilitata
+        if (italian_priority === 'true' || italian_priority === true) {
+          const aIsItaly = a.country === 'IT';
+          const bIsItaly = b.country === 'IT';
+          
+          if (aIsItaly && !bIsItaly) return -1;
+          if (!aIsItaly && bIsItaly) return 1;
+        }
+        
+        // Boost per città popolari
+        const aBoost = popularCityBoosts[a.name] || 0;
+        const bBoost = popularCityBoosts[b.name] || 0;
+        
+        const aScore = a.pop + aBoost;
+        const bScore = b.pop + bBoost;
+        
+        return bScore - aScore;
+      })
+      .slice(0, parseInt(limit));
+    
+    const popularCities = sortedCities.map(city => ({
+      id: `${city.name}_${city.country}`,
+      name: city.name,
+      country: city.country,
+      country_name: getCountryName(city.country),
+      formatted: `${city.name}, ${getCountryName(city.country)}`,
+      population: city.pop,
+      coordinates: {
+        lat: city.lat,
+        lon: city.lon
+      },
+      is_italian: city.country === 'IT',
+      is_capital: isCapitalCity(city.name, city.country)
+    }));
+    
+    const response = {
+      success: true,
+      cities: popularCities,
+      count: popularCities.length,
+      filters: {
+        country: country,
+        italian_priority: italian_priority === 'true' || italian_priority === true
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        cached: false
+      }
+    };
+    
+    // Cache per 4 ore (non cambia spesso)
+    try {
+      await setCache(cacheKey, response, 3600 * 4);
+    } catch (cacheError) {
+      logger.warn('Popular cities cache write error', { error: cacheError.message });
+    }
+    
+    res.json(response);
+    
+  } catch (error) {
+    logger.error('Popular cities failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get popular cities',
+      message: error.message,
+      cities: []
+    });
+  }
+});
+
+// 🌍 HELPER FUNCTIONS
+
+function getCountryName(countryCode) {
+  const countryNames = {
+    'IT': 'Italia',
+    'FR': 'Francia',
+    'ES': 'Spagna', 
+    'DE': 'Germania',
+    'GB': 'Regno Unito',
+    'US': 'Stati Uniti',
+    'CA': 'Canada',
+    'AU': 'Australia',
+    'BR': 'Brasile',
+    'AR': 'Argentina',
+    'MX': 'Messico',
+    'JP': 'Giappone',
+    'CN': 'Cina',
+    'IN': 'India',
+    'RU': 'Russia',
+    'TR': 'Turchia',
+    'EG': 'Egitto',
+    'ZA': 'Sudafrica',
+    'NG': 'Nigeria',
+    'KE': 'Kenya',
+    'MA': 'Marocco',
+    'TN': 'Tunisia',
+    'DZ': 'Algeria',
+    'CI': 'Costa d\'Avorio',
+    'GH': 'Ghana',
+    'SN': 'Senegal',
+    'ML': 'Mali',
+    'BF': 'Burkina Faso',
+    'NE': 'Niger',
+    'TD': 'Ciad',
+    'CM': 'Camerun',
+    'CF': 'Repubblica Centrafricana',
+    'CG': 'Congo',
+    'CD': 'Rep. Dem. del Congo',
+    'AO': 'Angola',
+    'ZM': 'Zambia',
+    'ZW': 'Zimbabwe',
+    'BW': 'Botswana',
+    'NA': 'Namibia',
+    'SZ': 'Eswatini',
+    'LS': 'Lesotho',
+    'MZ': 'Mozambico',
+    'MW': 'Malawi',
+    'TZ': 'Tanzania',
+    'UG': 'Uganda',
+    'RW': 'Ruanda',
+    'BI': 'Burundi',
+    'DJ': 'Gibuti',
+    'SO': 'Somalia',
+    'ET': 'Etiopia',
+    'ER': 'Eritrea',
+    'SD': 'Sudan',
+    'SS': 'Sudan del Sud',
+    'LY': 'Libia',
+    'CH': 'Svizzera',
+    'AT': 'Austria',
+    'BE': 'Belgio',
+    'NL': 'Paesi Bassi',
+    'LU': 'Lussemburgo',
+    'DK': 'Danimarca',
+    'SE': 'Svezia',
+    'NO': 'Norvegia',
+    'FI': 'Finlandia',
+    'IS': 'Islanda',
+    'IE': 'Irlanda',
+    'PT': 'Portogallo',
+    'GR': 'Grecia',
+    'CY': 'Cipro',
+    'MT': 'Malta',
+    'HR': 'Croazia',
+    'SI': 'Slovenia',
+    'BA': 'Bosnia ed Erzegovina',
+    'RS': 'Serbia',
+    'ME': 'Montenegro',
+    'MK': 'Macedonia del Nord',
+    'AL': 'Albania',
+    'BG': 'Bulgaria',
+    'RO': 'Romania',
+    'MD': 'Moldavia',
+    'UA': 'Ucraina',
+    'BY': 'Bielorussia',
+    'LT': 'Lituania',
+    'LV': 'Lettonia',
+    'EE': 'Estonia',
+    'PL': 'Polonia',
+    'CZ': 'Repubblica Ceca',
+    'SK': 'Slovacchia',
+    'HU': 'Ungheria'
+  };
+  
+  return countryNames[countryCode] || countryCode;
+}
+
+function formatSmartCity(city) {
+  return {
+    id: `${city.name}_${city.country}`,
+    name: city.name,
+    country: city.country,
+    country_name: getCountryName(city.country),
+    formatted: `${city.name}, ${getCountryName(city.country)}`,
+    population: city.population,
+    coordinates: {
+      lat: city.latitude,
+      lon: city.longitude
+    },
+    confidence: city.confidence,
+    is_italian: city.is_italian || false
+  };
+}
+
+function isCapitalCity(cityName, countryCode) {
+  const capitals = {
+    'IT': ['Roma', 'Rome'],
+    'FR': ['Paris'],
+    'ES': ['Madrid'],
+    'DE': ['Berlin'],
+    'GB': ['London'],
+    'US': ['Washington'],
+    'CA': ['Ottawa'],
+    'AU': ['Canberra'],
+    'BR': ['Brasília', 'Brasilia'],
+    'AR': ['Buenos Aires'],
+    'MX': ['Mexico City', 'Ciudad de México'],
+    'JP': ['Tokyo', 'Tōkyō'],
+    'CN': ['Beijing'],
+    'IN': ['New Delhi', 'Delhi'],
+    'RU': ['Moscow', 'Moskva'],
+    'TR': ['Ankara'],
+    'EG': ['Cairo', 'القاهرة'],
+    'ZA': ['Cape Town', 'Pretoria', 'Bloemfontein']
+  };
+  
+  const countryCapitals = capitals[countryCode] || [];
+  return countryCapitals.some(capital => 
+    capital.toLowerCase() === cityName.toLowerCase()
+  );
+}
+
+// 🚫 404 Handler
+app.use('*', (req, res) => {
+  logger.warn('404 - Endpoint not found', {
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    user_agent: req.get('User-Agent')
+  });
+  
+  res.status(404).json({
+    error: 'Endpoint not found',
+    message: `The endpoint ${req.method} ${req.originalUrl} does not exist`,
+    available_endpoints: [
+      'GET /v1/health',
+      'GET /v1/info', 
+      'POST /v1/natal-chart',
+      'POST /v1/planets',
+      'POST /v1/houses',
+      'POST /v1/ascendant',
+      'POST /v1/daily-horoscope',
+      'POST /v1/weekly-horoscope',
+      'POST /v1/monthly-horoscope',
+      'POST /v1/personal-forecast',
+      'POST /v1/geocoding',
+      'POST /v1/reverse-geocoding',
+      'GET /v1/geocoding/stats',
+      'POST /v1/natal-chart-geocoded',
+      'GET /v1/geocoding/autocomplete',
+      'GET /v1/geocoding/smart-autocomplete',
+      'GET /v1/geocoding/typeahead',
+      'GET /v1/geocoding/popular-cities'
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 🛡️ Enhanced Global Error Handler
+app.use((error, req, res, next) => {
+  // Log the error with full context
+  logger.error('Unhandled application error', {
+    error: error.message,
+    stack: error.stack,
+    method: req.method,
+    url: req.originalUrl,
+    body: req.body,
+    headers: {
+      'content-type': req.get('Content-Type'),
+      'user-agent': req.get('User-Agent'),
+      'x-api-key': req.get('X-API-Key') ? '[REDACTED]' : 'missing'
+    },
+    ip: req.ip,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Determine error type and appropriate response
+  let statusCode = 500;
+  let errorMessage = 'Internal server error';
+  let errorDetails = error.message;
+  
+  // Handle specific error types
+  if (error.name === 'ValidationError') {
+    statusCode = 400;
+    errorMessage = 'Validation error';
+  } else if (error.name === 'SyntaxError' && error.type === 'entity.parse.failed') {
+    statusCode = 400;
+    errorMessage = 'Invalid JSON in request body';
+    errorDetails = 'Request body contains malformed JSON';
+  } else if (error.code === 'ECONNREFUSED') {
+    statusCode = 503;
+    errorMessage = 'Service temporarily unavailable';
+    errorDetails = 'External service connection failed';
+  } else if (error.name === 'TimeoutError') {
+    statusCode = 504;
+    errorMessage = 'Request timeout';
+    errorDetails = 'Operation took too long to complete';
+  } else if (error.code === 'ENOTFOUND') {
+    statusCode = 503;
+    errorMessage = 'Service unavailable';
+    errorDetails = 'Required service not found';
+  } else if (error.name === 'TypeError' && error.message.includes('Cannot read property')) {
+    statusCode = 500;
+    errorMessage = 'Data processing error';
+    errorDetails = 'Invalid data structure encountered';
+  }
+  
+  // Don't expose internal error details in production
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  const errorResponse = {
+    error: errorMessage,
+    message: isProduction ? 'An unexpected error occurred' : errorDetails,
+    timestamp: new Date().toISOString(),
+    request_id: req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  };
+  
+  // Add debugging information in development
+  if (!isProduction) {
+    errorResponse.debug = {
+      stack: error.stack,
+      name: error.name,
+      code: error.code,
+      errno: error.errno,
+      path: error.path
+    };
+  }
+  
+  // Ensure response hasn't been sent already
+  if (!res.headersSent) {
+    res.status(statusCode).json(errorResponse);
+  }
+});
+
+// 🔄 Enhanced Process Error Handlers
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception - Server will exit', {
+    error: error.message,
+    stack: error.stack,
+    timestamp: new Date().toISOString(),
+    process_id: process.pid,
+    memory_usage: process.memoryUsage()
+  });
+  
+  // Attempt graceful shutdown
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Promise Rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : 'No stack trace available',
+    promise_string: promise.toString(),
+    timestamp: new Date().toISOString(),
+    process_id: process.pid
+  });
+  
+  // Don't exit on unhandled rejections in production, just log them
+  if (process.env.NODE_ENV !== 'production') {
+    console.error('Unhandled Promise Rejection detected in development mode');
+  }
+});
+
+// 🚀 Server Startup
+const startServer = async () => {
+  try {
+    app.listen(PORT, () => {
+      logger.info(`🌟 Astrology API Server running on port ${PORT}`, {
+        port: PORT,
+        environment: process.env.NODE_ENV || 'development',
+        swiss_ephemeris_version: se.version(),
+        swiss_ephemeris_available: swissEphAvailable,
+        endpoints_available: 18
+      });
+      
+      console.log('\n🎉 SERVER STARTED SUCCESSFULLY!');
+      console.log(`📊 Health Check: http://localhost:${PORT}/v1/health`);
+      console.log(`📖 API Info: http://localhost:${PORT}/v1/info`);
+      console.log(`🔑 API Key: ${API_KEY}`);
+      
+      if (!swissEphAvailable) {
+        console.log('\n⚠️  MOCK MODE: Swiss Ephemeris not available');
+        console.log('   Install with: npm install sweph');
+        console.log('   Download ephemeris files for real calculations');
+      }
+      
+      console.log('\n🧪 QUICK TESTS:');
+      console.log(`curl http://localhost:${PORT}/v1/health`);
+      console.log(`curl -X POST http://localhost:${PORT}/v1/daily-horoscope -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" -d '{"sign":"leo"}'`);
+    });
+    
+  } catch (error) {
+    logger.error('Failed to start server', { error: error.message });
+    process.exit(1);
+  }
+};
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down gracefully');
+  if (redisClient) {
+    await redisClient.quit();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('\n👋 Shutting down gracefully...');
+  if (redisClient) {
+    await redisClient.quit();
+  }
+  process.exit(0);
+});
+
+// Start the server
+startServer();
+
+// Export validation functions for testing
+module.exports = {
+  app,
+  validateDateInput,
+  validateCoordinates,
+  validateTimezone
+};

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌍 Test Geocoding - Astrology API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            border: 2px solid #e9ecef;
+        }
+        
+        .test-section h3 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        .form-group {
+            margin: 15px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin: 10px 5px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .response {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 20px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            margin: 15px 0;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        
+        .status.success {
+            background: #e8f5e8;
+            color: #2e7d32;
+            border-left: 5px solid #4caf50;
+        }
+        
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border-left: 5px solid #f44336;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        .result-card {
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .result-card h4 {
+            color: #495057;
+            margin-bottom: 10px;
+        }
+        
+        .result-card .details {
+            font-size: 14px;
+            color: #6c757d;
+        }
+        
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌍 Test Geocoding API</h1>
+        
+        <!-- Test Geocoding Search -->
+        <div class="test-section">
+            <h3>🔍 Geocoding: Nome Città → Coordinate</h3>
+            <div class="grid">
+                <div>
+                    <div class="form-group">
+                        <label>Cerca città:</label>
+                        <input type="text" id="city-search" placeholder="Milano, Roma, Londra..." value="Milano">
+                    </div>
+                    <div class="form-group">
+                        <label>Paese (opzionale):</label>
+                        <input type="text" id="country-filter" placeholder="IT, US, FR..." value="">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>Numero risultati:</label>
+                        <input type="number" id="search-limit" value="5" min="1" max="20">
+                    </div>
+                    <div class="form-group">
+                        <label>Popolazione minima:</label>
+                        <input type="number" id="min-population" value="10000" min="0">
+                    </div>
+                </div>
+            </div>
+            <button class="btn" onclick="testGeocoding()">🔍 Cerca Città</button>
+            <div id="geocoding-results"></div>
+        </div>
+        
+        <!-- Test Reverse Geocoding -->
+        <div class="test-section">
+            <h3>📍 Reverse Geocoding: Coordinate → Città</h3>
+            <div class="grid">
+                <div>
+                    <div class="form-group">
+                        <label>Latitudine:</label>
+                        <input type="number" id="reverse-lat" step="0.0001" value="45.4642">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitudine:</label>
+                        <input type="number" id="reverse-lon" step="0.0001" value="9.1900">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>Raggio ricerca (km):</label>
+                        <input type="number" id="search-radius" value="50" min="1" max="200">
+                    </div>
+                </div>
+            </div>
+            <button class="btn" onclick="testReverseGeocoding()">📍 Trova Città Vicine</button>
+            <div id="reverse-results"></div>
+        </div>
+        
+        <!-- Test Carta Natale con Geocoding -->
+        <div class="test-section">
+            <h3>🌟 Carta Natale con Auto-Geocoding</h3>
+            <div class="grid">
+                <div>
+                    <div class="form-group">
+                        <label>Data nascita:</label>
+                        <input type="date" id="natal-date" value="1990-05-15">
+                    </div>
+                    <div class="form-group">
+                        <label>Ora nascita:</label>
+                        <input type="time" id="natal-time" value="14:30">
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>Luogo nascita:</label>
+                        <input type="text" id="birth-place" placeholder="Milano, Italia" value="Milano, Italia">
+                    </div>
+                    <div class="form-group">
+                        <label>Sistema case:</label>
+                        <select id="natal-house-system">
+                            <option value="P">Placidus</option>
+                            <option value="K">Koch</option>
+                            <option value="O">Porphyrius</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button class="btn" onclick="testNatalChartGeocoded()">🌟 Calcola Carta Natale</button>
+            <div id="natal-geocoded-results"></div>
+        </div>
+        
+        <!-- Stats Geocoding -->
+        <div class="test-section">
+            <h3>📊 Statistiche Database Geocoding</h3>
+            <button class="btn" onclick="testGeocodingStats()">📊 Mostra Statistiche</button>
+            <div id="stats-results"></div>
+        </div>
+        
+        <!-- Test Città Famose -->
+        <div class="test-section">
+            <h3>🏙️ Test Città Famose</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0;">
+                <button class="btn" onclick="quickSearch('Roma')">Roma</button>
+                <button class="btn" onclick="quickSearch('Milano')">Milano</button>
+                <button class="btn" onclick="quickSearch('Napoli')">Napoli</button>
+                <button class="btn" onclick="quickSearch('Palermo')">Palermo</button>
+                <button class="btn" onclick="quickSearch('London')">London</button>
+                <button class="btn" onclick="quickSearch('Paris')">Paris</button>
+                <button class="btn" onclick="quickSearch('New York')">New York</button>
+                <button class="btn" onclick="quickSearch('Tokyo')">Tokyo</button>
+            </div>
+            <div id="quick-search-results"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        const API_KEY = 'test-api-key-123456789';
+        
+        async function makeRequest(endpoint, method = 'GET', body = null) {
+            const options = {
+                method,
+                headers: {
+                    'X-API-Key': API_KEY,
+                    'Content-Type': 'application/json'
+                }
+            };
+            
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, options);
+                const data = await response.json();
+                
+                return {
+                    success: response.ok,
+                    status: response.status,
+                    data
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+        
+        function showResults(elementId, data, success = true) {
+            const element = document.getElementById(elementId);
+            
+            if (success && data.results && Array.isArray(data.results)) {
+                // Show formatted results
+                let html = `<div class="status success">✅ Trovati ${data.results.length} risultati</div>`;
+                
+                data.results.forEach((result, index) => {
+                    html += `
+                        <div class="result-card">
+                            <h4>${result.name || result.formatted}</h4>
+                            <div class="details">
+                                📍 Coordinate: ${result.latitude.toFixed(4)}, ${result.longitude.toFixed(4)}<br>
+                                🏳️ Paese: ${result.country}<br>
+                                👥 Popolazione: ${result.population ? result.population.toLocaleString() : 'N/A'}<br>
+                                ${result.confidence ? `🎯 Confidenza: ${(result.confidence * 100).toFixed(0)}%<br>` : ''}
+                                ${result.distance ? `📏 Distanza: ${result.distance.toFixed(1)} km<br>` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                element.innerHTML = html;
+            } else {
+                // Show raw JSON
+                element.innerHTML = `
+                    <div class="response" style="border-left: 5px solid ${success ? '#4caf50' : '#f44336'}">
+                        ${JSON.stringify(data, null, 2)}
+                    </div>
+                `;
+            }
+        }
+        
+        async function testGeocoding() {
+            const query = document.getElementById('city-search').value;
+            const country = document.getElementById('country-filter').value;
+            const limit = parseInt(document.getElementById('search-limit').value);
+            const minPopulation = parseInt(document.getElementById('min-population').value);
+            
+            const requestData = {
+                query,
+                limit,
+                min_population: minPopulation
+            };
+            
+            if (country) {
+                requestData.country = country;
+            }
+            
+            const result = await makeRequest('/v1/geocoding', 'POST', requestData);
+            showResults('geocoding-results', result.data || result.error, result.success);
+        }
+        
+        async function testReverseGeocoding() {
+            const latitude = parseFloat(document.getElementById('reverse-lat').value);
+            const longitude = parseFloat(document.getElementById('reverse-lon').value);
+            const radius = parseInt(document.getElementById('search-radius').value);
+            
+            const result = await makeRequest('/v1/reverse-geocoding', 'POST', {
+                latitude,
+                longitude,
+                radius
+            });
+            
+            showResults('reverse-results', result.data || result.error, result.success);
+        }
+        
+        async function testNatalChartGeocoded() {
+            const birthDate = document.getElementById('natal-date').value;
+            const birthTime = document.getElementById('natal-time').value;
+            const birthPlace = document.getElementById('birth-place').value;
+            const houseSystem = document.getElementById('natal-house-system').value;
+            
+            const result = await makeRequest('/v1/natal-chart-geocoded', 'POST', {
+                birth_date: birthDate,
+                birth_time: birthTime + ':00',
+                birth_place: birthPlace,
+                house_system: houseSystem
+            });
+            
+            const element = document.getElementById('natal-geocoded-results');
+            
+            if (result.success && result.data.planets) {
+                const data = result.data;
+                let html = `<div class="status success">✅ Carta natale calcolata con successo!</div>`;
+                
+                html += `
+                    <div class="result-card">
+                        <h4>📍 Informazioni Luogo</h4>
+                        <div class="details">
+                            Luogo richiesto: ${birthPlace}<br>
+                            Luogo risolto: ${data.birth_info.resolved_place}<br>
+                            Coordinate: ${data.birth_info.latitude.toFixed(4)}, ${data.birth_info.longitude.toFixed(4)}<br>
+                            Geocoding usato: ${data.metadata.geocoding_used ? 'Sì' : 'No'}
+                        </div>
+                    </div>
+                    
+                    <div class="result-card">
+                        <h4>🌟 Pianeti Calcolati</h4>
+                        <div class="details">
+                            Sole in ${data.planets.sun ? data.planets.sun.sign : 'N/A'}<br>
+                            Luna in ${data.planets.moon ? data.planets.moon.sign : 'N/A'}<br>
+                            Ascendente in ${data.houses.ascendant ? data.houses.ascendant.sign : 'N/A'}<br>
+                            Totale pianeti: ${Object.keys(data.planets).length}<br>
+                            Aspetti trovati: ${data.aspects.length}
+                        </div>
+                    </div>
+                `;
+                
+                element.innerHTML = html;
+            } else {
+                showResults('natal-geocoded-results', result.data || result.error, result.success);
+            }
+        }
+        
+        async function testGeocodingStats() {
+            const result = await makeRequest('/v1/geocoding/stats');
+            showResults('stats-results', result.data || result.error, result.success);
+        }
+        
+        async function quickSearch(cityName) {
+            document.getElementById('city-search').value = cityName;
+            await testGeocoding();
+            document.getElementById('quick-search-results').innerHTML = 
+                `<div class="status success">🔍 Ricerca rapida per: ${cityName}</div>`;
+        }
+        
+        // Auto-test at page load
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🌍 Geocoding Test Interface loaded');
+        });
+    </script>
+</body>
+</html>
