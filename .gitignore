@@ -1,5 +1,7 @@
 node_modules/
 logs/*.log
+.env
+.env.production
 .env.local
 *.tmp
 *.backup
